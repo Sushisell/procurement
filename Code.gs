@@ -258,29 +258,69 @@ function readTemplateProducts_(sheet, knownSuppliers) {
   let currentSupplier = '';
 
   values.forEach((row, index) => {
-    const firstCell = clean_(row[0]);
-    const secondCell = clean_(row[1]);
-    const thirdCell = clean_(row[2]);
+    const cells = row.map(clean_);
+    const nonEmptyCells = cells.filter(Boolean);
+    if (!nonEmptyCells.length) return;
 
-    if (!firstCell) return;
-
-    const knownSupplier = knownSuppliers[normalizeKey_(firstCell)];
-    const isHeader = Boolean(knownSupplier) || (index === 0 && !secondCell && !thirdCell);
+    const knownSupplierCell = nonEmptyCells.find((cell) => Boolean(knownSuppliers[normalizeKey_(cell)]));
+    const firstCell = cells[0] || nonEmptyCells[0];
+    const knownSupplier = knownSupplierCell ? knownSuppliers[normalizeKey_(knownSupplierCell)] : '';
+    const isHeader = Boolean(knownSupplier) || (index === 0 && nonEmptyCells.length === 1);
     if (isHeader) {
       currentSupplier = knownSupplier || firstCell;
       return;
     }
 
     if (!currentSupplier) return;
+
+    const productCellIndex = getTemplateProductCellIndex_(row);
+    const product = clean_(row[productCellIndex]);
+    if (!product) return;
+
     products.push({
       supplier: currentSupplier,
-      product: firstCell,
-      price: toNumber_(secondCell),
-      unit: thirdCell,
+      product,
+      price: getTemplatePrice_(row, productCellIndex),
+      unit: getTemplateUnit_(row, productCellIndex),
     });
   });
 
   return products;
+}
+
+
+function getTemplateProductCellIndex_(row) {
+  const preferredIndexes = [0, CONFIG.branchSheet.productCol - 1];
+  for (const index of preferredIndexes) {
+    if (clean_(row[index])) return index;
+  }
+
+  return row.findIndex((cell) => Boolean(clean_(cell)));
+}
+
+function getTemplatePrice_(row, productCellIndex) {
+  const preferredIndexes = [productCellIndex + 1, CONFIG.branchSheet.priceCol - 1, 1];
+  for (const index of preferredIndexes) {
+    const price = toNumber_(row[index]);
+    if (price) return price;
+  }
+
+  for (let index = productCellIndex + 1; index < row.length; index += 1) {
+    const price = toNumber_(row[index]);
+    if (price) return price;
+  }
+
+  return 0;
+}
+
+function getTemplateUnit_(row, productCellIndex) {
+  const preferredIndexes = [productCellIndex + 2, CONFIG.branchSheet.unitCol - 1, 2];
+  for (const index of preferredIndexes) {
+    const value = clean_(row[index]);
+    if (value) return value;
+  }
+
+  return '';
 }
 
 function groupProductsBySupplier_(rows) {
