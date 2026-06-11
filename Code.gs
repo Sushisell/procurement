@@ -24,11 +24,47 @@ const CONFIG = {
   },
 };
 
-function doGet() {
+function doGet(event) {
+  const action = clean_(event && event.parameter && event.parameter.action);
+  if (action) return handleApiRequest_(action, null);
+
   return HtmlService.createTemplateFromFile('index')
     .evaluate()
     .setTitle('Заявка на продукты')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function doPost(event) {
+  try {
+    const action = clean_(event && event.parameter && event.parameter.action) || 'submit';
+    const body = event && event.postData && event.postData.contents;
+    const payload = body ? JSON.parse(body) : {};
+    return handleApiRequest_(action, payload);
+  } catch (error) {
+    return jsonResponse_({ ok: false, error: error.message || String(error) });
+  }
+}
+
+function handleApiRequest_(action, payload) {
+  try {
+    if (action === 'bootstrap' || action === 'getBootstrapData') {
+      return jsonResponse_({ ok: true, data: getBootstrapData() });
+    }
+
+    if (action === 'submit' || action === 'submitOrder') {
+      return jsonResponse_({ ok: true, data: submitOrder(payload) });
+    }
+
+    throw new Error('Неизвестное действие API: ' + action);
+  } catch (error) {
+    return jsonResponse_({ ok: false, error: error.message || String(error) });
+  }
+}
+
+function jsonResponse_(payload) {
+  return ContentService
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function getBootstrapData() {

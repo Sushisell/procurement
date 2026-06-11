@@ -16,7 +16,7 @@
       --success: #039855;
       --danger: #d92d20;
       --shadow: 0 12px 28px rgba(16, 24, 40, .10);
-      --product-header-top: 132px;
+      --product-header-top: 116px;
     }
 
     * { box-sizing: border-box; }
@@ -78,24 +78,36 @@
     .card {
       background: var(--card);
       border: 1px solid rgba(208, 213, 221, .8);
-      border-radius: 22px;
-      padding: 16px;
-      margin: 12px 0;
+      border-radius: 18px;
+      padding: 10px;
+      margin: 8px 0;
       box-shadow: var(--shadow);
+    }
+
+    .setup-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 140px;
+      gap: 8px;
+      align-items: end;
     }
 
     label {
       display: block;
-      margin: 12px 0 6px;
-      font-weight: 700;
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.1;
+      text-transform: uppercase;
+      letter-spacing: .03em;
     }
 
     select, input[type="date"], input[type="number"], input[type="search"] {
       width: 100%;
-      min-height: 48px;
+      min-height: 42px;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 10px 12px;
+      border-radius: 12px;
+      padding: 8px 10px;
       font: inherit;
       background: #fff;
     }
@@ -192,6 +204,45 @@
       background: #fff;
     }
 
+    .product-sticky-head {
+      position: sticky;
+      top: var(--product-header-top);
+      z-index: 14;
+      overflow: hidden;
+      border-radius: 16px 16px 0 0;
+      background: #eef4ff;
+      box-shadow: 0 8px 18px rgba(16, 24, 40, .12);
+    }
+
+    .product-sums {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px 10px;
+      color: #1849a9;
+      border-bottom: 1px solid #b2ccff;
+    }
+
+    .product-sum-label {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      line-height: 1.1;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .product-sum-value {
+      display: block;
+      margin-top: 2px;
+      font-size: 15px;
+      font-weight: 900;
+      line-height: 1.15;
+    }
+
+    .product-sum-value.total { color: var(--success); }
+
     .product-row {
       display: grid;
       grid-template-columns: minmax(150px, 1fr) minmax(76px, .42fr) minmax(86px, .48fr) 96px;
@@ -204,9 +255,6 @@
     .product-row:first-child { border-top: 0; }
 
     .product-header {
-      position: sticky;
-      top: var(--product-header-top);
-      z-index: 14;
       background: #eef4ff;
       color: #1849a9;
       font-size: 12px;
@@ -215,7 +263,6 @@
       letter-spacing: .03em;
       border-top: 0;
       border-bottom: 1px solid #b2ccff;
-      box-shadow: 0 8px 18px rgba(16, 24, 40, .12);
     }
 
     .product-name { font-weight: 700; line-height: 1.25; }
@@ -224,7 +271,7 @@
     .qty { text-align: center; font-weight: 800; }
 
     @media (max-width: 520px) {
-      :root { --product-header-top: 140px; }
+      :root { --product-header-top: 122px; }
 
       body { font-size: 18px; }
 
@@ -232,9 +279,17 @@
         padding: 14px 12px calc(112px + env(safe-area-inset-bottom));
       }
 
-      .title { font-size: 27px; }
-      .subtitle, .meta { font-size: 16px; }
+      .title { font-size: 24px; }
+      .subtitle, .meta { font-size: 15px; }
       .version-badge { font-size: 13px; }
+
+      .header { padding-bottom: 6px; }
+
+      .setup-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .setup-field.date-field { grid-column: span 2; }
       .tab { font-size: 17px; padding: 12px 16px; }
       .supplier-name { font-size: 23px; }
       .summary-label, .product-header { font-size: 13px; }
@@ -249,6 +304,10 @@
         overflow-x: auto;
         overflow-y: visible;
         -webkit-overflow-scrolling: touch;
+      }
+
+      .product-sticky-head {
+        min-width: 520px;
       }
 
       .product-row {
@@ -298,7 +357,7 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v1.1.2</div>
+  <div id="appVersion" class="version-badge">v1.2.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -307,15 +366,21 @@
 
     <section id="setup" class="card">
       <div id="loading">Загружаю справочники…</div>
-      <div id="setupFields" class="hidden">
-        <label for="branch">Филиал</label>
-        <select id="branch"></select>
+      <div id="setupFields" class="setup-grid hidden">
+        <div class="setup-field">
+          <label for="branch">Филиал</label>
+          <select id="branch"></select>
+        </div>
 
-        <label for="employee">ФИО</label>
-        <select id="employee"></select>
+        <div class="setup-field">
+          <label for="employee">ФИО</label>
+          <select id="employee"></select>
+        </div>
 
-        <label for="date">Дата заявки</label>
-        <input id="date" type="date">
+        <div class="setup-field date-field">
+          <label for="date">Дата</label>
+          <input id="date" type="date">
+        </div>
       </div>
       <div id="loadError" class="error hidden"></div>
     </section>
@@ -339,7 +404,9 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v1.1.2';
+    const APP_VERSION = 'v1.2.0';
+    const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || '';
+    const hasAppsScriptBridge = Boolean(window.google?.script?.run);
 
     const state = {
       data: null,
@@ -353,10 +420,7 @@
 
     disablePageZoom();
 
-    google.script.run
-      .withSuccessHandler(init)
-      .withFailureHandler(showLoadError)
-      .getBootstrapData();
+    loadBootstrapData();
 
     function init(data) {
       state.data = data;
@@ -444,7 +508,7 @@
           ${info.contact ? `<div class="meta phones">${linkPhones(escapeHtml(info.contact))}</div>` : ''}
           ${info.orderInfo ? `<div class="meta">${escapeHtml(info.orderInfo)}</div>` : ''}
         </div>
-        ${renderProductTable(group.supplier, products)}
+        ${renderProductTable(group.supplier, products, info, supplierTotal)}
       `;
 
       el('supplierPanel').querySelectorAll('.qty').forEach((input) => {
@@ -457,16 +521,28 @@
       });
     }
 
-    function renderProductTable(supplier, products) {
+    function renderProductTable(supplier, products, info, supplierTotal) {
       if (!products.length) return '<div class="empty">По поиску ничего не найдено</div>';
 
       return `
         <div class="product-table" role="table" aria-label="Товары поставщика">
-          <div class="product-row product-header" role="row">
-            <div role="columnheader">Название</div>
-            <div role="columnheader">Цена</div>
-            <div role="columnheader">Кратность</div>
-            <div role="columnheader">Кол-во</div>
+          <div class="product-sticky-head">
+            <div class="product-sums" aria-label="Суммы поставщика">
+              <div>
+                <span class="product-sum-label">Минималка</span>
+                <span class="product-sum-value">${escapeHtml(info.minimum || 'не указана')}</span>
+              </div>
+              <div>
+                <span class="product-sum-label">Сумма заявки</span>
+                <span class="product-sum-value total">${money(supplierTotal)}</span>
+              </div>
+            </div>
+            <div class="product-row product-header" role="row">
+              <div role="columnheader">Название</div>
+              <div role="columnheader">Цена</div>
+              <div role="columnheader">Кратность</div>
+              <div role="columnheader">Кол-во</div>
+            </div>
           </div>
           ${products.map((item) => renderProduct(supplier, item)).join('')}
         </div>
@@ -504,18 +580,58 @@
         items: collectItems(),
       };
 
-      google.script.run
-        .withSuccessHandler((result) => {
+      runServer('submitOrder', payload)
+        .then((result) => {
           state.submitting = false;
           el('status').textContent = `Готово. Сумма: ${money(result.total)}${result.warnings?.length ? ' · Есть предупреждения' : ''}`;
           updateSubmitState();
         })
-        .withFailureHandler((error) => {
+        .catch((error) => {
           state.submitting = false;
           el('status').textContent = error.message || String(error);
           updateSubmitState();
-        })
-        .submitOrder(payload);
+        });
+    }
+
+    function loadBootstrapData() {
+      runServer('getBootstrapData')
+        .then(init)
+        .catch(showLoadError);
+    }
+
+    function runServer(method, payload) {
+      if (hasAppsScriptBridge) return runAppsScript(method, payload);
+      if (!API_URL) {
+        return Promise.reject(new Error('Для GitHub Pages укажите URL веб-приложения Apps Script: ?api=https://script.google.com/macros/s/.../exec или window.PROCUREMENT_API_URL.'));
+      }
+      return runHttpApi(method, payload);
+    }
+
+    function runAppsScript(method, payload) {
+      return new Promise((resolve, reject) => {
+        const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+        if (payload === undefined) runner[method]();
+        else runner[method](payload);
+      });
+    }
+
+    function runHttpApi(method, payload) {
+      const url = new URL(API_URL);
+      url.searchParams.set('action', method === 'getBootstrapData' ? 'bootstrap' : 'submit');
+      const options = method === 'getBootstrapData'
+        ? { method: 'GET' }
+        : {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload),
+        };
+
+      return fetch(url.toString(), options)
+        .then((response) => response.json())
+        .then((result) => {
+          if (!result.ok) throw new Error(result.error || 'Ошибка API');
+          return result.data;
+        });
     }
 
     function collectItems() {
