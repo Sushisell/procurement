@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #172033;
+      --muted: #667085;
+      --primary: #1570ef;
+      --primary-dark: #175cd3;
+      --border: #d0d5dd;
+      --success: #039855;
+      --danger: #d92d20;
+      --shadow: 0 12px 28px rgba(16, 24, 40, .10);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 16px;
+    }
+
+    .app {
+      min-height: 100vh;
+      padding: 14px 14px calc(96px + env(safe-area-inset-bottom));
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      padding: 12px 0 10px;
+      background: linear-gradient(180deg, var(--bg) 80%, rgba(245, 247, 251, 0));
+    }
+
+    .title {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.15;
+      font-weight: 800;
+    }
+
+    .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(208, 213, 221, .8);
+      border-radius: 22px;
+      padding: 16px;
+      margin: 12px 0;
+      box-shadow: var(--shadow);
+    }
+
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-weight: 700;
+    }
+
+    select, input[type="date"], input[type="number"], input[type="search"] {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+    }
+
+    .tabs {
+      position: sticky;
+      top: 76px;
+      z-index: 15;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px 0;
+      background: var(--bg);
+      scrollbar-width: none;
+    }
+
+    .tabs::-webkit-scrollbar { display: none; }
+
+    .tab {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tab.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+    }
+
+    .supplier-card {
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      padding: 14px;
+      background: #fff;
+      margin: 10px 0 14px;
+    }
+
+    .supplier-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .supplier-name { font-size: 20px; font-weight: 800; margin: 0; }
+    .supplier-sum { text-align: right; font-weight: 800; color: var(--success); }
+    .meta { color: var(--muted); font-size: 14px; margin-top: 8px; white-space: pre-line; }
+    .phones a { color: var(--primary-dark); font-weight: 700; text-decoration: none; }
+
+    .minimum {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 14px;
+      background: #eff8ff;
+      color: #1849a9;
+      font-weight: 800;
+    }
+
+    .product {
+      display: grid;
+      grid-template-columns: 1fr 96px;
+      gap: 10px;
+      padding: 13px 0;
+      border-top: 1px solid #eaecf0;
+      align-items: center;
+    }
+
+    .product-name { font-weight: 700; line-height: 1.25; }
+    .product-meta { margin-top: 5px; color: var(--muted); font-size: 14px; }
+    .line-total { margin-top: 4px; color: var(--success); font-size: 13px; font-weight: 700; }
+    .qty { text-align: center; font-weight: 800; }
+
+    .bottom-bar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 30;
+      padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+      background: rgba(255, 255, 255, .96);
+      border-top: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+
+    .bottom-inner {
+      max-width: 720px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .total-label { color: var(--muted); font-size: 13px; }
+    .total-value { font-size: 20px; font-weight: 900; }
+
+    button.primary {
+      min-height: 52px;
+      border: 0;
+      border-radius: 16px;
+      background: var(--primary);
+      color: #fff;
+      font: inherit;
+      font-weight: 900;
+    }
+
+    button.primary:disabled { opacity: .55; }
+    .hidden { display: none !important; }
+    .empty, .error { padding: 20px; text-align: center; color: var(--muted); }
+    .error { color: var(--danger); }
+    .toast { margin-top: 10px; font-size: 14px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <h1 class="title">Заявка на продукты</h1>
+      <p class="subtitle">Выберите филиал, ФИО и заполните количества по поставщикам.</p>
+    </header>
+
+    <section id="setup" class="card">
+      <div id="loading">Загружаю справочники…</div>
+      <div id="setupFields" class="hidden">
+        <label for="branch">Филиал</label>
+        <select id="branch"></select>
+
+        <label for="employee">ФИО</label>
+        <select id="employee"></select>
+
+        <label for="date">Дата заявки</label>
+        <input id="date" type="date">
+      </div>
+      <div id="loadError" class="error hidden"></div>
+    </section>
+
+    <section id="order" class="hidden">
+      <div id="tabs" class="tabs"></div>
+      <input id="search" type="search" placeholder="Поиск товара">
+      <div id="supplierPanel"></div>
+    </section>
+  </main>
+
+  <footer class="bottom-bar">
+    <div class="bottom-inner">
+      <div>
+        <div class="total-label">Итого заявка</div>
+        <div id="grandTotal" class="total-value">0 ₽</div>
+      </div>
+      <button id="submit" class="primary" disabled>Отправить</button>
+    </div>
+    <div id="status" class="toast"></div>
+  </footer>
+
+  <script>
+    const state = {
+      data: null,
+      activeSupplier: '',
+      quantities: {},
+      submitting: false,
+    };
+
+    const el = (id) => document.getElementById(id);
+    const money = (value) => new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(value || 0);
+
+    google.script.run
+      .withSuccessHandler(init)
+      .withFailureHandler(showLoadError)
+      .getBootstrapData();
+
+    function init(data) {
+      state.data = data;
+      state.activeSupplier = data.catalog[0]?.supplier || '';
+      el('loading').classList.add('hidden');
+      el('setupFields').classList.remove('hidden');
+      el('order').classList.remove('hidden');
+      el('date').value = data.today;
+
+      renderBranches();
+      renderEmployees();
+      renderTabs();
+      renderSupplier();
+      bindEvents();
+      updateTotals();
+    }
+
+    function bindEvents() {
+      el('branch').addEventListener('change', () => {
+        renderEmployees();
+        updateSubmitState();
+      });
+      el('employee').addEventListener('change', updateSubmitState);
+      el('date').addEventListener('change', updateSubmitState);
+      el('search').addEventListener('input', renderSupplier);
+      el('submit').addEventListener('click', submitOrder);
+    }
+
+    function renderBranches() {
+      const options = ['<option value="">Выберите филиал</option>']
+        .concat(state.data.branches.map((branch) => `<option>${escapeHtml(branch.name)}</option>`));
+      el('branch').innerHTML = options.join('');
+    }
+
+    function renderEmployees() {
+      const branch = el('branch').value;
+      const employees = state.data.employeesByBranch[branch] || [];
+      const options = ['<option value="">Выберите ФИО</option>']
+        .concat(employees.map((name) => `<option>${escapeHtml(name)}</option>`));
+      el('employee').innerHTML = options.join('');
+    }
+
+    function renderTabs() {
+      el('tabs').innerHTML = state.data.catalog.map((group) => (
+        `<button class="tab ${group.supplier === state.activeSupplier ? 'active' : ''}" data-supplier="${escapeAttr(group.supplier)}">${escapeHtml(group.supplier)}</button>`
+      )).join('');
+
+      el('tabs').querySelectorAll('.tab').forEach((button) => {
+        button.addEventListener('click', () => {
+          state.activeSupplier = button.dataset.supplier;
+          renderTabs();
+          renderSupplier();
+        });
+      });
+    }
+
+    function renderSupplier() {
+      const group = state.data.catalog.find((item) => item.supplier === state.activeSupplier);
+      if (!group) {
+        el('supplierPanel').innerHTML = '<div class="empty">Нет товаров</div>';
+        return;
+      }
+
+      const info = state.data.suppliers[group.supplier] || {};
+      const query = el('search').value.trim().toLowerCase();
+      const products = group.products.filter((item) => item.product.toLowerCase().includes(query));
+      const supplierTotal = group.products.reduce((sum, item) => sum + getQuantity(group.supplier, item.product) * Number(item.price || 0), 0);
+
+      el('supplierPanel').innerHTML = `
+        <div class="supplier-card">
+          <div class="supplier-top">
+            <h2 class="supplier-name">${escapeHtml(group.supplier)}</h2>
+            <div class="supplier-sum">${money(supplierTotal)}</div>
+          </div>
+          ${info.minimum ? `<div class="minimum">Минимальная заявка: ${escapeHtml(info.minimum)}</div>` : ''}
+          ${info.contact ? `<div class="meta phones">${linkPhones(escapeHtml(info.contact))}</div>` : ''}
+          ${info.orderInfo ? `<div class="meta">${escapeHtml(info.orderInfo)}</div>` : ''}
+        </div>
+        ${products.map((item) => renderProduct(group.supplier, item)).join('') || '<div class="empty">По поиску ничего не найдено</div>'}
+      `;
+
+      el('supplierPanel').querySelectorAll('.qty').forEach((input) => {
+        input.addEventListener('input', (event) => {
+          const { supplier, product } = event.target.dataset;
+          state.quantities[key(supplier, product)] = Number(event.target.value || 0);
+          updateTotals();
+          renderSupplier();
+        });
+      });
+    }
+
+    function renderProduct(supplier, item) {
+      const quantity = getQuantity(supplier, item.product);
+      const total = quantity * Number(item.price || 0);
+      return `
+        <div class="product">
+          <div>
+            <div class="product-name">${escapeHtml(item.product)}</div>
+            <div class="product-meta">${money(item.price)} · ${escapeHtml(item.unit || 'кратность не указана')}</div>
+            ${total ? `<div class="line-total">${money(total)}</div>` : ''}
+          </div>
+          <input class="qty" inputmode="decimal" type="number" min="0" step="any" value="${quantity || ''}" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" placeholder="0">
+        </div>
+      `;
+    }
+
+    function submitOrder() {
+      if (state.submitting) return;
+      state.submitting = true;
+      updateSubmitState();
+      el('status').textContent = 'Отправляю заявку…';
+
+      const payload = {
+        branch: el('branch').value,
+        employee: el('employee').value,
+        date: el('date').value,
+        items: collectItems(),
+      };
+
+      google.script.run
+        .withSuccessHandler((result) => {
+          state.submitting = false;
+          el('status').textContent = `Готово. Сумма: ${money(result.total)}${result.warnings?.length ? ' · Есть предупреждения' : ''}`;
+          updateSubmitState();
+        })
+        .withFailureHandler((error) => {
+          state.submitting = false;
+          el('status').textContent = error.message || String(error);
+          updateSubmitState();
+        })
+        .submitOrder(payload);
+    }
+
+    function collectItems() {
+      const items = [];
+      state.data.catalog.forEach((group) => {
+        group.products.forEach((item) => {
+          const quantity = getQuantity(group.supplier, item.product);
+          if (!quantity) return;
+          items.push({
+            supplier: group.supplier,
+            product: item.product,
+            price: item.price,
+            unit: item.unit,
+            quantity,
+          });
+        });
+      });
+      return items;
+    }
+
+    function updateTotals() {
+      const total = collectItems().reduce((sum, item) => sum + item.quantity * Number(item.price || 0), 0);
+      el('grandTotal').textContent = money(total);
+      updateSubmitState();
+    }
+
+    function updateSubmitState() {
+      el('submit').disabled = state.submitting || !el('branch').value || !el('employee').value || !el('date').value || !collectItems().length;
+      el('submit').textContent = state.submitting ? 'Отправка…' : 'Отправить';
+    }
+
+    function getQuantity(supplier, product) {
+      return Number(state.quantities[key(supplier, product)] || 0);
+    }
+
+    function key(supplier, product) { return `${supplier}::${product}`; }
+
+    function linkPhones(text) {
+      return text.replace(/(?:\+?\d[\d\s().-]{8,}\d)/g, (phone) => {
+        const href = phone.replace(/\D/g, '');
+        return `<a href="tel:${href}">${phone}</a>`;
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+    }
+
+    function escapeAttr(value) { return escapeHtml(value).replace(/'/g, '&#039;'); }
+
+    function showLoadError(error) {
+      el('loading').classList.add('hidden');
+      el('loadError').classList.remove('hidden');
+      el('loadError').textContent = error.message || String(error);
+    }
+  </script>
+</body>
+</html>
