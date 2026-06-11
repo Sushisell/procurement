@@ -3,7 +3,7 @@
 <head>
   <base target="_top">
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <style>
     :root {
       --bg: #f5f7fb;
@@ -16,9 +16,17 @@
       --success: #039855;
       --danger: #d92d20;
       --shadow: 0 12px 28px rgba(16, 24, 40, .10);
+      --product-header-top: 132px;
     }
 
     * { box-sizing: border-box; }
+
+    html {
+      min-height: 100%;
+      touch-action: manipulation;
+      -webkit-text-size-adjust: 100%;
+    }
+
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -38,8 +46,24 @@
       position: sticky;
       top: 0;
       z-index: 20;
-      padding: 12px 0 10px;
+      padding: 12px 86px 10px 0;
       background: linear-gradient(180deg, var(--bg) 80%, rgba(245, 247, 251, 0));
+    }
+
+    .version-badge {
+      position: fixed;
+      top: calc(10px + env(safe-area-inset-top));
+      right: 12px;
+      z-index: 40;
+      padding: 6px 10px;
+      border: 1px solid rgba(208, 213, 221, .9);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .92);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: 0 8px 20px rgba(16, 24, 40, .10);
+      backdrop-filter: blur(10px);
     }
 
     .title {
@@ -115,39 +139,122 @@
     }
 
     .supplier-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: flex-start;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
     }
 
     .supplier-name { font-size: 20px; font-weight: 800; margin: 0; }
-    .supplier-sum { text-align: right; font-weight: 800; color: var(--success); }
-    .meta { color: var(--muted); font-size: 14px; margin-top: 8px; white-space: pre-line; }
-    .phones a { color: var(--primary-dark); font-weight: 700; text-decoration: none; }
+    .supplier-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
 
-    .minimum {
-      margin-top: 10px;
-      padding: 10px;
-      border-radius: 14px;
+    .summary-cloud {
+      min-height: 68px;
+      padding: 11px 12px;
+      border-radius: 18px;
       background: #eff8ff;
       color: #1849a9;
       font-weight: 800;
     }
 
-    .product {
+    .summary-cloud.total {
+      background: #ecfdf3;
+      color: #027a48;
+    }
+
+    .summary-label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.1;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    .summary-value {
+      display: block;
+      font-size: 17px;
+      line-height: 1.2;
+    }
+
+    .meta { color: var(--muted); font-size: 14px; margin-top: 8px; white-space: pre-line; }
+    .phones a { color: var(--primary-dark); font-weight: 700; text-decoration: none; }
+
+    .product-table {
+      margin-top: 10px;
+      border: 1px solid #eaecf0;
+      border-radius: 16px;
+      overflow: visible;
+      background: #fff;
+    }
+
+    .product-row {
       display: grid;
-      grid-template-columns: 1fr 96px;
-      gap: 10px;
-      padding: 13px 0;
-      border-top: 1px solid #eaecf0;
+      grid-template-columns: minmax(150px, 1fr) minmax(76px, .42fr) minmax(86px, .48fr) 96px;
+      gap: 8px;
       align-items: center;
+      padding: 11px 10px;
+      border-top: 1px solid #eaecf0;
+    }
+
+    .product-row:first-child { border-top: 0; }
+
+    .product-header {
+      position: sticky;
+      top: var(--product-header-top);
+      z-index: 14;
+      background: #eef4ff;
+      color: #1849a9;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      border-top: 0;
+      border-bottom: 1px solid #b2ccff;
+      box-shadow: 0 8px 18px rgba(16, 24, 40, .12);
     }
 
     .product-name { font-weight: 700; line-height: 1.25; }
-    .product-meta { margin-top: 5px; color: var(--muted); font-size: 14px; }
+    .product-price, .product-unit { color: var(--muted); font-size: 14px; }
     .line-total { margin-top: 4px; color: var(--success); font-size: 13px; font-weight: 700; }
     .qty { text-align: center; font-weight: 800; }
+
+    @media (max-width: 520px) {
+      :root { --product-header-top: 140px; }
+
+      body { font-size: 18px; }
+
+      .app {
+        padding: 14px 12px calc(112px + env(safe-area-inset-bottom));
+      }
+
+      .title { font-size: 27px; }
+      .subtitle, .meta { font-size: 16px; }
+      .version-badge { font-size: 13px; }
+      .tab { font-size: 17px; padding: 12px 16px; }
+      .supplier-name { font-size: 23px; }
+      .summary-label, .product-header { font-size: 13px; }
+      .summary-value { font-size: 19px; }
+      .product-name { font-size: 18px; }
+      .product-price, .product-unit { font-size: 16px; }
+      .line-total { font-size: 15px; }
+      .total-label { font-size: 15px; }
+      .total-value { font-size: 23px; }
+
+      .product-table {
+        overflow-x: auto;
+        overflow-y: visible;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .product-row {
+        min-width: 520px;
+      }
+    }
 
     .bottom-bar {
       position: fixed;
@@ -191,6 +298,7 @@
   </style>
 </head>
 <body>
+  <div id="appVersion" class="version-badge">v1.1.2</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -231,6 +339,8 @@
   </footer>
 
   <script>
+    const APP_VERSION = 'v1.1.2';
+
     const state = {
       data: null,
       activeSupplier: '',
@@ -240,6 +350,8 @@
 
     const el = (id) => document.getElementById(id);
     const money = (value) => new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(value || 0);
+
+    disablePageZoom();
 
     google.script.run
       .withSuccessHandler(init)
@@ -253,6 +365,7 @@
       el('setupFields').classList.remove('hidden');
       el('order').classList.remove('hidden');
       el('date').value = data.today;
+      el('appVersion').textContent = APP_VERSION;
 
       renderBranches();
       renderEmployees();
@@ -317,13 +430,21 @@
         <div class="supplier-card">
           <div class="supplier-top">
             <h2 class="supplier-name">${escapeHtml(group.supplier)}</h2>
-            <div class="supplier-sum">${money(supplierTotal)}</div>
+            <div class="supplier-summary">
+              <div class="summary-cloud">
+                <span class="summary-label">Минималка</span>
+                <span class="summary-value">${escapeHtml(info.minimum || 'не указана')}</span>
+              </div>
+              <div class="summary-cloud total">
+                <span class="summary-label">Сумма заявки</span>
+                <span class="summary-value">${money(supplierTotal)}</span>
+              </div>
+            </div>
           </div>
-          ${info.minimum ? `<div class="minimum">Минимальная заявка: ${escapeHtml(info.minimum)}</div>` : ''}
           ${info.contact ? `<div class="meta phones">${linkPhones(escapeHtml(info.contact))}</div>` : ''}
           ${info.orderInfo ? `<div class="meta">${escapeHtml(info.orderInfo)}</div>` : ''}
         </div>
-        ${products.map((item) => renderProduct(group.supplier, item)).join('') || '<div class="empty">По поиску ничего не найдено</div>'}
+        ${renderProductTable(group.supplier, products)}
       `;
 
       el('supplierPanel').querySelectorAll('.qty').forEach((input) => {
@@ -336,17 +457,36 @@
       });
     }
 
+    function renderProductTable(supplier, products) {
+      if (!products.length) return '<div class="empty">По поиску ничего не найдено</div>';
+
+      return `
+        <div class="product-table" role="table" aria-label="Товары поставщика">
+          <div class="product-row product-header" role="row">
+            <div role="columnheader">Название</div>
+            <div role="columnheader">Цена</div>
+            <div role="columnheader">Кратность</div>
+            <div role="columnheader">Кол-во</div>
+          </div>
+          ${products.map((item) => renderProduct(supplier, item)).join('')}
+        </div>
+      `;
+    }
+
     function renderProduct(supplier, item) {
       const quantity = getQuantity(supplier, item.product);
       const total = quantity * Number(item.price || 0);
       return `
-        <div class="product">
-          <div>
+        <div class="product-row" role="row">
+          <div role="cell">
             <div class="product-name">${escapeHtml(item.product)}</div>
-            <div class="product-meta">${money(item.price)} · ${escapeHtml(item.unit || 'кратность не указана')}</div>
             ${total ? `<div class="line-total">${money(total)}</div>` : ''}
           </div>
-          <input class="qty" inputmode="decimal" type="number" min="0" step="any" value="${quantity || ''}" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" placeholder="0">
+          <div class="product-price" role="cell">${money(item.price)}</div>
+          <div class="product-unit" role="cell">${escapeHtml(item.unit || '—')}</div>
+          <div role="cell">
+            <input class="qty" aria-label="Количество для ${escapeAttr(item.product)}" inputmode="decimal" type="number" min="0" step="any" value="${quantity || ''}" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" placeholder="0">
+          </div>
         </div>
       `;
     }
@@ -412,6 +552,18 @@
     }
 
     function key(supplier, product) { return `${supplier}::${product}`; }
+
+    function disablePageZoom() {
+      document.addEventListener('gesturestart', preventZoom, { passive: false });
+      document.addEventListener('gesturechange', preventZoom, { passive: false });
+      document.addEventListener('touchmove', (event) => {
+        if (event.touches.length > 1) preventZoom(event);
+      }, { passive: false });
+    }
+
+    function preventZoom(event) {
+      event.preventDefault();
+    }
 
     function linkPhones(text) {
       return text.replace(/(?:\+?\d[\d\s().-]{8,}\d)/g, (phone) => {
