@@ -420,7 +420,8 @@
 
   <script>
     const APP_VERSION = 'v1.2.1';
-    const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || '';
+    const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
+    const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
 
     const state = {
