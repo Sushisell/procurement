@@ -1,4 +1,5 @@
 const CONFIG = {
+  timeZone: 'Asia/Krasnoyarsk',
   masterSpreadsheetId: '12bLLftMzcRzUZBA_BDeDNUZ7M7jywTrL3d2rvhukhqI',
   sheets: {
     prices: 'Цены',
@@ -71,13 +72,14 @@ function jsonResponse_(payload) {
 function getBootstrapData() {
   const master = getMasterSpreadsheet_();
   const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
+  const suppliers = readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers));
 
   return {
     branches: readBranches_(employeesSheet),
     employeesByBranch: readEmployees_(employeesSheet),
-    suppliers: readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers)),
+    suppliers,
     catalog: readCatalog_(master),
-    today: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    today: Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'),
   };
 }
 
@@ -85,6 +87,14 @@ function submitOrder(payload) {
   validatePayload_(payload);
 
   const master = getMasterSpreadsheet_();
+  const suppliers = readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers));
+  const supplier = suppliers[payload.supplier];
+  if (!supplier) throw new Error('Не найден поставщик: ' + payload.supplier);
+  if (payload.date < supplier.earliestDeliveryDate) {
+    throw new Error('Поставщик «' + payload.supplier + '» принимает заявку на текущий день до '
+      + supplier.cutoffTime + ' по Красноярску. Выберите следующую дату.');
+  }
+
   const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
   const branchMap = readBranches_(employeesSheet).reduce((acc, branch) => {
     acc[normalizeKey_(branch.name)] = branch;
@@ -195,12 +205,15 @@ function readSupplierInfo_(sheet) {
   values.slice(1).forEach((row) => {
     const name = clean_(row[0]);
     if (!name) return;
+    const cutoffTime = normalizeCutoffTime_(row[5] || row[4]);
     result[name] = {
       name,
       contact: clean_(row[1]),
       minimum: clean_(row[2]),
       unit: clean_(row[3]),
       orderInfo: clean_(row[4] || row[3]),
+      cutoffTime,
+      earliestDeliveryDate: getEarliestDeliveryDate_(cutoffTime),
     };
   });
   return result;
@@ -485,13 +498,19 @@ function buildProductRowIndex_(sheet) {
 
   const height = lastRow - CONFIG.branchSheet.firstProductRow + 1;
   const products = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getDisplayValues();
+  const productFontSizes = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getFontSizes();
   const prices = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.priceCol, height, 1).getDisplayValues();
   const units = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.unitCol, height, 1).getDisplayValues();
 
   products.forEach((row, index) => {
     const product = clean_(row[0]);
     if (!product) return;
-    const isSupplierHeader = !clean_(prices[index][0]) && !clean_(units[index][0]);
+    // Supplier rows are deliberately formatted as large headings. Do not mistake a
+    // real product with temporarily empty price/multiplicity cells for a heading:
+    // otherwise its ordered quantity would never reach the branch sheet.
+    const isSupplierHeader = !clean_(prices[index][0])
+      && !clean_(units[index][0])
+      && Number(productFontSizes[index][0]) >= 16;
     if (isSupplierHeader) return;
     result[normalizeKey_(product)] = CONFIG.branchSheet.firstProductRow + index;
   });
@@ -504,7 +523,35 @@ function validatePayload_(payload) {
   if (!payload.branch) throw new Error('Выберите филиал.');
   if (!payload.employee) throw new Error('Выберите ФИО.');
   if (!payload.date) throw new Error('Выберите дату.');
+  if (!payload.supplier) throw new Error('Выберите поставщика.');
   if (!payload.items || !payload.items.length) throw new Error('Добавьте хотя бы одну позицию.');
+}
+
+function getEarliestDeliveryDate_(cutoffTime, currentTime) {
+  const now = currentTime || new Date();
+  const today = Utilities.formatDate(now, CONFIG.timeZone, 'yyyy-MM-dd');
+  const cutoff = cutoffTime && cutoffTime.match(/^(\d{2}):(\d{2})$/);
+  if (!cutoff) return today;
+
+  const currentMinutes = Number(Utilities.formatDate(now, CONFIG.timeZone, 'H')) * 60
+    + Number(Utilities.formatDate(now, CONFIG.timeZone, 'm'));
+  const cutoffMinutes = Number(cutoff[1]) * 60 + Number(cutoff[2]);
+  if (currentMinutes < cutoffMinutes) return today;
+
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  return Utilities.formatDate(tomorrow, CONFIG.timeZone, 'yyyy-MM-dd');
+}
+
+function normalizeCutoffTime_(value) {
+  const text = clean_(value).toLowerCase();
+  if (!text) return '';
+  const match = text.match(/(?:до\s*)?(?:[01]?\d|2[0-3])(?:[:.]\d{2})?/);
+  if (!match || (!/^\d{1,2}(?::|\.)?\d{0,2}$/.test(text) && !/до\s*\d/.test(text))) return '';
+  const parts = match[0].replace(/до\s*/, '').replace('.', ':').split(':');
+  const hour = Number(parts[0]);
+  const minute = Number(parts[1] || 0);
+  if (hour > 23 || minute > 59) return '';
+  return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
 }
 
 function parseDate_(value) {
