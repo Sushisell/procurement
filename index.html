@@ -16,7 +16,7 @@
       --success: #039855;
       --danger: #d92d20;
       --shadow: 0 12px 28px rgba(16, 24, 40, .10);
-      --product-header-top: 116px;
+      --product-header-top: 0px;
       --product-name-size: 18px;
       --product-meta-size: 16px;
     }
@@ -45,9 +45,7 @@
     }
 
     .header {
-      position: sticky;
-      top: 0;
-      z-index: 20;
+      position: relative;
       padding: 12px 86px 10px 0;
       background: linear-gradient(180deg, var(--bg) 80%, rgba(245, 247, 251, 0));
     }
@@ -88,10 +86,12 @@
 
     .setup-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(172px, .55fr);
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 8px;
       align-items: end;
     }
+
+    .setup-field.date-field { grid-column: 1 / -1; }
 
     label {
       display: block;
@@ -116,9 +116,7 @@
     }
 
     .tabs {
-      position: sticky;
-      top: 76px;
-      z-index: 15;
+      position: relative;
       display: flex;
       gap: 8px;
       overflow-x: auto;
@@ -219,7 +217,7 @@
 
     .product-sums {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
       padding: 8px 10px;
       color: #1849a9;
@@ -248,7 +246,7 @@
 
     .product-row {
       display: grid;
-      grid-template-columns: minmax(150px, 1fr) minmax(76px, .38fr) minmax(86px, .44fr) 104px;
+      grid-template-columns: minmax(150px, 1fr) 92px 92px 104px;
       gap: 10px;
       align-items: center;
       padding: 13px 12px;
@@ -371,7 +369,7 @@
     .toast { margin-top: 10px; font-size: 14px; color: var(--muted); }
 
     /* Compact mobile ordering layout */
-    .supplier-card { position: sticky; top: 72px; z-index: 18; padding: 10px 12px; box-shadow: var(--shadow); }
+    .supplier-card { padding: 10px 12px; box-shadow: var(--shadow); }
     .supplier-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .supplier-name { font-size: 16px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .supplier-inline { font-size: 13px; font-weight: 800; white-space: nowrap; }
@@ -383,25 +381,30 @@
     .search-tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 8px 0; }
     .filter-button { border: 1px solid var(--border); border-radius: 12px; background: white; padding: 0 12px; font-weight: 750; }
     .filter-button.active { background: #eef4ff; color: #1849a9; border-color: #84adff; }
-    .product-sticky-head, .product-header { display: none; }
-    .product-table { overflow: hidden; margin-top: 0; }
-    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
+    .product-table { overflow: visible; margin-top: 0; }
+    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 64px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
     .product-row.selected { background: #ecfdf3; }
-    .product-main { min-width: 0; display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; }
-    .product-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-    .product-meta-inline { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+    .product-main { min-width: 0; }
+    .product-name { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 14px; }
+    .product-price, .product-unit { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
     .stepper { display: grid; grid-template-columns: 34px 30px 34px; align-items: center; }
     .stepper button { width: 34px; height: 34px; border: 1px solid var(--border); background: #fff; color: var(--primary-dark); font-size: 22px; font-weight: 800; line-height: 1; }
     .stepper button:first-child { border-radius: 10px 0 0 10px; }
     .stepper button:last-child { border-radius: 0 10px 10px 0; }
     .qty-value { text-align: center; font-weight: 850; font-variant-numeric: tabular-nums; }
-    .setup-grid { grid-template-columns: 1fr; }
-    .date-field { display: none; }
-    @media (min-width: 560px) { .setup-grid { grid-template-columns: 1fr 1fr; } .product-name { font-size: 15px; } }
+    .setup-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .setup-grid select { min-width: 0; padding-left: 7px; padding-right: 4px; font-size: 14px; }
+    .setup-field label { font-size: 10px; }
+    .date-field { display: block; }
+    @media (min-width: 560px) { .product-name { font-size: 15px; } }
+    @media (max-width: 420px) {
+      .product-row { grid-template-columns: minmax(0, 1fr) 62px 55px 92px; gap: 4px; }
+      .product-header { font-size: 9px; letter-spacing: 0; }
+    }
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.1.0</div>
+  <div id="appVersion" class="version-badge">v0.2.1</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -422,7 +425,7 @@
         </div>
 
         <div class="setup-field date-field">
-          <label for="date">Дата</label>
+          <label for="date">Дата поставки (Красноярск)</label>
           <input id="date" type="date">
         </div>
       </div>
@@ -448,7 +451,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.1.0';
+    const APP_VERSION = 'v0.2.1';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -475,12 +478,12 @@
       el('setupFields').classList.remove('hidden');
       el('order').classList.remove('hidden');
       el('date').value = data.today;
-      el('date').min = data.today;
       el('appVersion').textContent = APP_VERSION;
 
       renderBranches();
       renderEmployees();
       renderTabs();
+      applySupplierDateConstraint();
       renderSupplier();
       bindEvents();
       updateStickyHeaderOffset();
@@ -493,7 +496,10 @@
         updateSubmitState();
       });
       el('employee').addEventListener('change', updateSubmitState);
-      el('date').addEventListener('change', updateSubmitState);
+      el('date').addEventListener('change', () => {
+        renderSupplier();
+        updateTotals();
+      });
       el('search').addEventListener('input', renderSupplier);
       el('selectedOnly').addEventListener('click', () => { state.selectedOnly = !state.selectedOnly; el('selectedOnly').classList.toggle('active', state.selectedOnly); renderSupplier(); });
       window.addEventListener('resize', updateStickyHeaderOffset);
@@ -523,6 +529,7 @@
       el('tabs').querySelectorAll('.tab').forEach((button) => {
         button.addEventListener('click', () => {
           state.activeSupplier = button.dataset.supplier;
+          applySupplierDateConstraint();
           renderTabs();
           renderSupplier();
         });
@@ -543,22 +550,22 @@
 
       const minimum = minimumNumber(info.minimum);
       const missing = Math.max(0, minimum - supplierTotal);
+      const cutoffText = info.cutoffTime
+        ? `На сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску`
+        : 'Ограничение времени не указано';
       el('supplierPanel').innerHTML = `
         <div class="supplier-card">
           <div class="supplier-top">
             <h2 class="supplier-name">${escapeHtml(group.supplier)}</h2>
             <div class="supplier-inline ${missing ? 'short' : 'ok'}">Заявка ${money(supplierTotal)} · Мин. ${escapeHtml(info.minimum || '—')} ${minimum && !missing ? '✓' : ''}</div>
           </div>
-          <div class="supplier-controls">
-            <div><label for="supplierDate">Дата поставки</label><input id="supplierDate" type="date" min="${escapeAttr(state.data.today)}" value="${escapeAttr(el('date').value)}"></div>
-            <button class="conditions" id="conditionsButton" type="button">Условия ⓘ</button>
-          </div>
+          <div class="supplier-controls"><button class="conditions" id="conditionsButton" type="button">Условия ⓘ</button></div>
+          <div class="meta">${cutoffText}</div>
           ${missing ? `<div class="meta" style="color:var(--danger)">До минималки не хватает ${money(missing)}</div>` : ''}
           <div id="conditionsText" class="meta hidden">${escapeHtml(info.orderInfo || 'Условия не указаны')} ${info.contact ? `<br>${linkPhones(info.contact)}` : ''}</div>
         </div>
         ${renderProductTable(group.supplier, products, info, supplierTotal)}
       `;
-      el('supplierDate').addEventListener('change', (event) => { el('date').value = event.target.value; renderSupplier(); updateTotals(); });
       el('conditionsButton').addEventListener('click', () => el('conditionsText').classList.toggle('hidden'));
 
       el('supplierPanel').querySelectorAll('[data-step]').forEach((button) => {
@@ -571,20 +578,33 @@
       });
     }
 
-    function renderProductTable(supplier, products) {
+    function applySupplierDateConstraint() {
+      const info = state.data.suppliers[state.activeSupplier] || {};
+      const earliestDate = info.earliestDeliveryDate || state.data.today;
+      el('date').min = earliestDate;
+      if (!el('date').value || el('date').value < earliestDate) el('date').value = earliestDate;
+    }
+
+    function renderProductTable(supplier, products, info, supplierTotal) {
       if (!products.length) return '<div class="empty">По поиску ничего не найдено</div>';
-      return `<div class="product-table" role="list">${products.map((item) => renderProduct(supplier, item)).join('')}</div>`;
+      return `<div class="product-table" role="table">
+        <div class="product-sticky-head">
+          <div class="product-sums"><strong>${escapeHtml(supplier)}</strong><strong class="${supplierTotal < minimumNumber(info.minimum) ? 'short' : 'ok'}">${money(supplierTotal)} / мин. ${escapeHtml(info.minimum || '—')}</strong></div>
+          <div class="product-row product-header" role="row"><span>Наименование</span><span>Сумма</span><span>Кратность</span><span>Кол-во</span></div>
+        </div>
+        ${products.map((item) => renderProduct(supplier, item)).join('')}</div>`;
     }
 
     function renderProduct(supplier, item) {
       const quantity = getQuantity(supplier, item.product);
       const price = priceForDate(item, el('date').value);
       return `
-        <div class="product-row ${quantity ? 'selected' : ''}" role="listitem" title="${escapeAttr(item.product)}">
+        <div class="product-row ${quantity ? 'selected' : ''}" role="row">
           <div class="product-main">
             <span class="product-name">${escapeHtml(item.product)}</span>
-            <span class="product-meta-inline">${money(price)} / ${escapeHtml(item.unit || 'шт')}</span>
           </div>
+          <div class="product-price">${money(price)}</div>
+          <div class="product-unit">${escapeHtml(item.unit || '1')}</div>
           <div class="stepper" aria-label="Количество">
             <button type="button" data-step="-1" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" aria-label="Уменьшить">−</button>
             <span class="qty-value">${quantity}</span>
@@ -731,10 +751,7 @@
     }
 
     function updateStickyHeaderOffset() {
-      const tabs = el('tabs');
-      if (!tabs) return;
-      const bottom = tabs.getBoundingClientRect().bottom;
-      document.documentElement.style.setProperty('--product-header-top', `${Math.max(0, Math.round(bottom))}px`);
+      document.documentElement.style.setProperty('--product-header-top', '0px');
     }
 
     function toClientNumber(value) {
