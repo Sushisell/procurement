@@ -90,9 +90,13 @@ function submitOrder(payload) {
   const suppliers = readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers));
   const supplier = suppliers[payload.supplier];
   if (!supplier) throw new Error('Не найден поставщик: ' + payload.supplier);
-  if (payload.date < supplier.earliestDeliveryDate) {
-    throw new Error('Поставщик «' + payload.supplier + '» принимает заявку на текущий день до '
-      + supplier.cutoffTime + ' по Красноярску. Выберите следующую дату.');
+  const availability = getDeliveryAvailability_(supplier.deliveryRules, payload.date);
+  if (supplier.deliveryRules.length && !availability.available) {
+    throw new Error('Поставщик «' + payload.supplier + '» не принимает сейчас заявку на '
+      + formatRussianDate_(payload.date) + '. Выберите доступную дату поставки.');
+  }
+  if (!supplier.deliveryRules.length && payload.date < supplier.earliestDeliveryDate) {
+    throw new Error('Поставщик «' + payload.supplier + '» уже не принимает заявку на текущий день.');
   }
   validateSupplierMinimum_(payload, supplier);
 
@@ -209,18 +213,135 @@ function readSupplierInfo_(sheet) {
   values.slice(1).forEach((row) => {
     const name = clean_(row[0]);
     if (!name) return;
-    const cutoffTime = normalizeCutoffTime_(row[5] || row[4]);
-    result[name] = {
-      name,
-      contact: clean_(row[1]),
-      minimum: clean_(row[2]),
-      unit: clean_(row[3]),
-      orderInfo: clean_(row[4] || row[3]),
-      cutoffTime,
-      earliestDeliveryDate: getEarliestDeliveryDate_(cutoffTime),
-    };
+    if (!result[name]) {
+      result[name] = { name, contact: '', minimum: '', unit: '', orderInfo: '', cutoffTime: '', deliveryRules: [] };
+    }
+    const supplier = result[name];
+    supplier.contact = supplier.contact || clean_(row[1]);
+    supplier.minimum = supplier.minimum || clean_(row[2]);
+    supplier.unit = supplier.unit || clean_(row[3]);
+    supplier.orderInfo = supplier.orderInfo || clean_(row[4] || row[3]);
+
+    const rule = parseDeliveryRule_(row[5], row[6], row[7]);
+    if (rule) supplier.deliveryRules.push(rule);
+    supplier.cutoffTime = supplier.cutoffTime || normalizeCutoffTime_(row[5] || row[4]);
+  });
+
+  Object.keys(result).forEach((name) => {
+    const supplier = result[name];
+    supplier.deliveryRules = deduplicateDeliveryRules_(supplier.deliveryRules);
+    supplier.availableDeliveryDates = supplier.deliveryRules.length
+      ? getAvailableDeliveryDates_(supplier.deliveryRules, 370)
+      : [];
+    supplier.availabilityThrough = addDaysToIsoDate_(
+      Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'), 369);
+    supplier.earliestDeliveryDate = supplier.availableDeliveryDates[0]
+      || getEarliestDeliveryDate_(supplier.cutoffTime);
   });
   return result;
+}
+
+function parseDeliveryRule_(orderDay, cutoffValue, deliveryValue) {
+  const weekday = parseRussianWeekday_(orderDay);
+  const cutoffTime = normalizeCutoffTime_(cutoffValue);
+  const delivery = clean_(deliveryValue).toLowerCase().replace(/ё/g, 'е');
+  if (weekday === null || !cutoffTime || !delivery) return null;
+
+  if (/тот\s*же\s*день/.test(delivery)) {
+    return { orderWeekday: weekday, cutoffTime, deliveryType: 'В тот же день', deliveryOffset: 0 };
+  }
+  if (/следующ[а-я]*\s*день/.test(delivery)) {
+    return { orderWeekday: weekday, cutoffTime, deliveryType: 'Следующий день', deliveryOffset: 1 };
+  }
+
+  const deliveryWeekday = parseRussianWeekday_(delivery.replace(/^(?:в|\s)+/i, ''));
+  if (deliveryWeekday !== null) {
+    return { orderWeekday: weekday, cutoffTime, deliveryType: 'В день недели', deliveryWeekday };
+  }
+  return null;
+}
+
+function parseRussianWeekday_(value) {
+  const text = clean_(value).toLowerCase().replace(/ё/g, 'е').replace(/[^а-я]/g, '');
+  const aliases = {
+    'пн': 1, 'понедельник': 1, 'понедельника': 1,
+    'вт': 2, 'вторник': 2, 'вторника': 2,
+    'ср': 3, 'среда': 3, 'среду': 3, 'среды': 3,
+    'чт': 4, 'четверг': 4, 'четверга': 4,
+    'пт': 5, 'пятница': 5, 'пятницу': 5, 'пятницы': 5,
+    'сб': 6, 'суббота': 6, 'субботу': 6, 'субботы': 6,
+    'вс': 0, 'воскресенье': 0, 'воскресенья': 0,
+  };
+  return Object.prototype.hasOwnProperty.call(aliases, text) ? aliases[text] : null;
+}
+
+function deduplicateDeliveryRules_(rules) {
+  const seen = {};
+  return rules.filter((rule) => {
+    const key = JSON.stringify(rule);
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
+}
+
+function getAvailableDeliveryDates_(rules, numberOfDays, currentTime) {
+  const now = currentTime || new Date();
+  const today = Utilities.formatDate(now, CONFIG.timeZone, 'yyyy-MM-dd');
+  const result = [];
+  for (let offset = 0; offset < numberOfDays; offset += 1) {
+    const date = addDaysToIsoDate_(today, offset);
+    if (getDeliveryAvailability_(rules, date, now).available) result.push(date);
+  }
+  return result;
+}
+
+function getDeliveryAvailability_(rules, deliveryDate, currentTime) {
+  const now = currentTime || new Date();
+  const today = Utilities.formatDate(now, CONFIG.timeZone, 'yyyy-MM-dd');
+  const currentMinutes = Number(Utilities.formatDate(now, CONFIG.timeZone, 'H')) * 60
+    + Number(Utilities.formatDate(now, CONFIG.timeZone, 'm'));
+
+  for (let daysBefore = 0; daysBefore <= 7; daysBefore += 1) {
+    const orderDate = addDaysToIsoDate_(deliveryDate, -daysBefore);
+    const orderWeekday = isoWeekday_(orderDate);
+    for (const rule of rules) {
+      if (rule.orderWeekday !== orderWeekday || calculateDeliveryDate_(orderDate, rule) !== deliveryDate) continue;
+      if (orderDate > today) return { available: true, rule, orderDate };
+      if (orderDate === today && currentMinutes < timeToMinutes_(rule.cutoffTime)) {
+        return { available: true, rule, orderDate };
+      }
+    }
+  }
+  return { available: false };
+}
+
+function calculateDeliveryDate_(orderDate, rule) {
+  if (rule.deliveryType === 'В тот же день') return orderDate;
+  if (rule.deliveryType === 'Следующий день') return addDaysToIsoDate_(orderDate, rule.deliveryOffset || 1);
+  const daysAhead = (rule.deliveryWeekday - isoWeekday_(orderDate) + 7) % 7 || 7;
+  return addDaysToIsoDate_(orderDate, daysAhead);
+}
+
+function addDaysToIsoDate_(isoDate, days) {
+  const parts = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + days));
+  return Utilities.formatDate(date, 'UTC', 'yyyy-MM-dd');
+}
+
+function isoWeekday_(isoDate) {
+  const parts = isoDate.split('-').map(Number);
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay();
+}
+
+function timeToMinutes_(value) {
+  const parts = value.split(':').map(Number);
+  return parts[0] * 60 + parts[1];
+}
+
+function formatRussianDate_(isoDate) {
+  const parts = isoDate.split('-');
+  return parts[2] + '.' + parts[1] + '.' + parts[0];
 }
 
 function readCatalog_(spreadsheet) {
