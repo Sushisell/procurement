@@ -91,8 +91,6 @@
       align-items: end;
     }
 
-    .setup-field.date-field { grid-column: 1 / -1; }
-
     label {
       display: block;
       margin: 0 0 4px;
@@ -113,34 +111,6 @@
       font: inherit;
       font-size: max(16px, 1em);
       background: #fff;
-    }
-
-    .tabs {
-      position: relative;
-      display: flex;
-      gap: 8px;
-      overflow-x: auto;
-      padding: 8px 0;
-      background: var(--bg);
-      scrollbar-width: none;
-    }
-
-    .tabs::-webkit-scrollbar { display: none; }
-
-    .tab {
-      border: 1px solid var(--border);
-      background: #fff;
-      color: var(--text);
-      border-radius: 999px;
-      padding: 10px 14px;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-
-    .tab.active {
-      background: var(--primary);
-      border-color: var(--primary);
-      color: #fff;
     }
 
     .supplier-card {
@@ -295,9 +265,7 @@
         grid-template-columns: 1fr 1fr;
       }
 
-      .setup-field.date-field { grid-column: span 2; }
       .setup-field.date-field input { min-height: 46px; }
-      .tab { font-size: 17px; padding: 12px 16px; }
       .supplier-name { font-size: 23px; }
       .summary-label, .product-header { font-size: 13px; }
       .summary-value { font-size: 19px; }
@@ -382,7 +350,7 @@
     .filter-button { border: 1px solid var(--border); border-radius: 12px; background: white; padding: 0 12px; font-weight: 750; }
     .filter-button.active { background: #eef4ff; color: #1849a9; border-color: #84adff; }
     .product-table { overflow: visible; margin-top: 0; }
-    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 68px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
+    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px 60px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
     .product-row.selected { background: #ecfdf3; }
     .product-main { min-width: 0; }
     .product-name { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 14px; }
@@ -399,20 +367,19 @@
     .setup-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .setup-grid select { min-width: 0; padding-left: 7px; padding-right: 4px; font-size: 14px; }
     .setup-field label { font-size: 10px; }
-    .date-field { display: block; }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
-      .product-row { grid-template-columns: minmax(0, 1fr) 58px 62px 92px; gap: 4px; }
+      .product-row { grid-template-columns: minmax(0, 1fr) 50px 52px 92px; gap: 4px; }
       .product-header { font-size: 9px; letter-spacing: 0; }
     }
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.4.0</div>
+  <div id="appVersion" class="version-badge">v0.5.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
-      <p class="subtitle">Выберите филиал, ФИО и заполните количества по поставщикам.</p>
+      <p class="subtitle">Выберите филиал, ФИО, дату и поставщика.</p>
     </header>
 
     <section id="setup" class="card">
@@ -432,12 +399,16 @@
           <label for="date">Дата поставки (Красноярск)</label>
           <input id="date" type="date">
         </div>
+
+        <div class="setup-field supplier-field">
+          <label for="supplier">Поставщик</label>
+          <select id="supplier"></select>
+        </div>
       </div>
       <div id="loadError" class="error hidden"></div>
     </section>
 
     <section id="order" class="hidden">
-      <div id="tabs" class="tabs"></div>
       <div class="search-tools"><input id="search" type="search" placeholder="Найти товар"><button id="selectedOnly" class="filter-button" type="button">Выбранные</button></div>
       <div id="supplierPanel"></div>
     </section>
@@ -455,7 +426,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.4.0';
+    const APP_VERSION = 'v0.5.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -477,17 +448,16 @@
 
     function init(data) {
       state.data = data;
-      state.activeSupplier = data.catalog[0]?.supplier || '';
       el('loading').classList.add('hidden');
       el('setupFields').classList.remove('hidden');
       el('order').classList.remove('hidden');
       el('date').value = data.today;
+      el('date').min = data.today;
       el('appVersion').textContent = APP_VERSION;
 
       renderBranches();
       renderEmployees();
-      renderTabs();
-      applySupplierDateConstraint();
+      renderSupplierOptions();
       renderSupplier();
       bindEvents();
       updateStickyHeaderOffset();
@@ -501,6 +471,12 @@
       });
       el('employee').addEventListener('change', updateSubmitState);
       el('date').addEventListener('change', () => {
+        renderSupplierOptions();
+        renderSupplier();
+        updateTotals();
+      });
+      el('supplier').addEventListener('change', () => {
+        state.activeSupplier = el('supplier').value;
         renderSupplier();
         updateTotals();
       });
@@ -525,19 +501,19 @@
       el('employee').innerHTML = options.join('');
     }
 
-    function renderTabs() {
-      el('tabs').innerHTML = state.data.catalog.map((group) => (
-        `<button class="tab ${group.supplier === state.activeSupplier ? 'active' : ''}" data-supplier="${escapeAttr(group.supplier)}">${escapeHtml(group.supplier)}</button>`
-      )).join('');
-
-      el('tabs').querySelectorAll('.tab').forEach((button) => {
-        button.addEventListener('click', () => {
-          state.activeSupplier = button.dataset.supplier;
-          applySupplierDateConstraint();
-          renderTabs();
-          renderSupplier();
-        });
+    function renderSupplierOptions() {
+      const date = el('date').value;
+      const availableGroups = state.data.catalog.filter((group) => {
+        const info = state.data.suppliers[group.supplier] || {};
+        return date && !isDateUnavailable(info, date);
       });
+      if (!availableGroups.some((group) => group.supplier === state.activeSupplier)) {
+        state.activeSupplier = availableGroups[0]?.supplier || '';
+      }
+      el('supplier').innerHTML = availableGroups.length
+        ? availableGroups.map((group) => `<option value="${escapeAttr(group.supplier)}"${group.supplier === state.activeSupplier ? ' selected' : ''}>${escapeHtml(group.supplier)}</option>`).join('')
+        : '<option value="">Нет доступных поставщиков</option>';
+      el('supplier').disabled = !availableGroups.length;
     }
 
     function renderSupplier() {
@@ -557,7 +533,7 @@
       const minimumLabel = formatMinimum(info);
       const unavailable = isSelectedDateUnavailable(info);
       const cutoffText = info.deliveryRules?.length
-        ? `Доступные даты рассчитаны по графику приёма заявок`
+        ? ''
         : (info.cutoffTime
           ? `На сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску`
           : 'График приёма заявок не указан');
@@ -568,7 +544,7 @@
             <div class="supplier-inline ${missing ? 'short' : 'ok'}">Заявка ${money(supplierTotal)} · Мин. ${escapeHtml(minimumLabel)} ${minimum && !missing ? '✓' : ''}</div>
           </div>
           <div class="supplier-controls"><button class="conditions" id="conditionsButton" type="button">Условия ⓘ</button></div>
-          <div class="meta">${cutoffText}</div>
+          ${cutoffText ? `<div class="meta">${cutoffText}</div>` : ''}
           ${missing && !unavailable ? `<div class="meta" style="color:var(--danger)">До минималки не хватает ${escapeHtml(formatMinimumValue(missing, info))}</div>` : ''}
           <div id="conditionsText" class="meta hidden">${escapeHtml(info.orderInfo || 'Условия не указаны')} ${info.contact ? `<br>${linkPhones(info.contact)}` : ''}</div>
         </div>
@@ -584,13 +560,6 @@
           updateTotals();
         });
       });
-    }
-
-    function applySupplierDateConstraint() {
-      const info = state.data.suppliers[state.activeSupplier] || {};
-      const earliestDate = info.earliestDeliveryDate || state.data.today;
-      el('date').min = earliestDate;
-      el('date').max = info.deliveryRules?.length ? info.availabilityThrough : '';
     }
 
     function renderProductTable(supplier, products, info, supplierTotal) {
@@ -760,6 +729,10 @@
     function isSelectedDateUnavailable(info) {
       const selectedDate = el('date').value;
       if (!selectedDate) return false;
+      return isDateUnavailable(info, selectedDate);
+    }
+
+    function isDateUnavailable(info, selectedDate) {
       if (info.deliveryRules?.length) {
         return !(info.availableDeliveryDates || []).includes(selectedDate);
       }
