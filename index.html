@@ -350,11 +350,13 @@
     .filter-button { border: 1px solid var(--border); border-radius: 12px; background: white; padding: 0 12px; font-weight: 750; }
     .filter-button.active { background: #eef4ff; color: #1849a9; border-color: #84adff; }
     .product-table { overflow: visible; margin-top: 0; }
-    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px 60px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
+    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 60px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
     .product-row.selected { background: #ecfdf3; }
     .product-main { min-width: 0; }
     .product-name { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 14px; }
     .product-price, .product-unit { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+    .quantity-control { display: flex; min-width: 0; flex-direction: column; align-items: center; gap: 4px; }
+    .quantity-control .product-price { color: var(--danger); text-align: center; white-space: nowrap; }
     .product-header span { min-width: 0; text-align: right; white-space: normal; overflow-wrap: normal; }
     .product-header span:first-child { text-align: left; }
     .availability-notice { margin: 10px 0; padding: 16px; border: 1px solid #fda29b; border-radius: 16px; background: #fef3f2; color: #b42318; font-size: 15px; line-height: 1.45; }
@@ -369,13 +371,13 @@
     .setup-field label { font-size: 10px; }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
-      .product-row { grid-template-columns: minmax(0, 1fr) 50px 52px 92px; gap: 4px; }
+      .product-row { grid-template-columns: minmax(0, 1fr) 52px 92px; gap: 4px; }
       .product-header { font-size: 9px; letter-spacing: 0; }
     }
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.5.0</div>
+  <div id="appVersion" class="version-badge">v0.5.1</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -426,7 +428,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.5.0';
+    const APP_VERSION = 'v0.5.1';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -567,7 +569,7 @@
       return `<div class="product-table" role="table">
         <div class="product-sticky-head">
           <div class="product-sums"><strong>${escapeHtml(supplier)}</strong><strong class="${getMinimumProgress(state.data.catalog.find((group) => group.supplier === supplier), info).missing ? 'short' : 'ok'}">${money(supplierTotal)} / мин. ${escapeHtml(formatMinimum(info))}</strong></div>
-          <div class="product-row product-header" role="row"><span>Наименование</span><span>Сумма</span><span>Кратн.</span><span>Кол-во</span></div>
+          <div class="product-row product-header" role="row"><span>Наименование</span><span>Кратн.</span><span>Кол-во</span></div>
         </div>
         ${products.map((item) => renderProduct(supplier, item)).join('')}</div>`;
     }
@@ -580,12 +582,14 @@
           <div class="product-main">
             <span class="product-name">${escapeHtml(item.product)}</span>
           </div>
-          <div class="product-price">${money(price)}</div>
           <div class="product-unit">${escapeHtml(item.unit || '1')}</div>
-          <div class="stepper" aria-label="Количество">
-            <button type="button" data-step="-1" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" aria-label="Уменьшить">−</button>
-            <span class="qty-value">${quantity}</span>
-            <button type="button" data-step="1" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" aria-label="Увеличить">+</button>
+          <div class="quantity-control">
+            <div class="stepper" aria-label="Количество">
+              <button type="button" data-step="-1" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" aria-label="Уменьшить">−</button>
+              <span class="qty-value">${quantity}</span>
+              <button type="button" data-step="1" data-supplier="${escapeAttr(supplier)}" data-product="${escapeAttr(item.product)}" aria-label="Увеличить">+</button>
+            </div>
+            <div class="product-price">по ${money(price)}</div>
           </div>
         </div>`;
     }
