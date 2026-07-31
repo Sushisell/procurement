@@ -382,11 +382,15 @@
     .filter-button { border: 1px solid var(--border); border-radius: 12px; background: white; padding: 0 12px; font-weight: 750; }
     .filter-button.active { background: #eef4ff; color: #1849a9; border-color: #84adff; }
     .product-table { overflow: visible; margin-top: 0; }
-    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 64px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
+    .product-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px 68px 98px; align-items: center; gap: 6px; min-height: 50px; padding: 7px 8px; transition: background .15s ease; }
     .product-row.selected { background: #ecfdf3; }
     .product-main { min-width: 0; }
     .product-name { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 14px; }
     .product-price, .product-unit { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+    .product-header span { min-width: 0; text-align: right; white-space: normal; overflow-wrap: normal; }
+    .product-header span:first-child { text-align: left; }
+    .availability-notice { margin: 10px 0; padding: 16px; border: 1px solid #fda29b; border-radius: 16px; background: #fef3f2; color: #b42318; font-size: 15px; line-height: 1.45; }
+    .availability-notice strong { display: block; margin-bottom: 5px; }
     .stepper { display: grid; grid-template-columns: 34px 30px 34px; align-items: center; }
     .stepper button { width: 34px; height: 34px; border: 1px solid var(--border); background: #fff; color: var(--primary-dark); font-size: 22px; font-weight: 800; line-height: 1; }
     .stepper button:first-child { border-radius: 10px 0 0 10px; }
@@ -398,13 +402,13 @@
     .date-field { display: block; }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
-      .product-row { grid-template-columns: minmax(0, 1fr) 62px 55px 92px; gap: 4px; }
+      .product-row { grid-template-columns: minmax(0, 1fr) 58px 62px 92px; gap: 4px; }
       .product-header { font-size: 9px; letter-spacing: 0; }
     }
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.2.1</div>
+  <div id="appVersion" class="version-badge">v0.3.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -442,8 +446,8 @@
   <footer class="bottom-bar">
     <div class="bottom-inner">
       <div>
-        <div class="total-label">Итого заявка</div>
-        <div id="grandTotal" class="total-value">0 ₽</div>
+        <div class="total-label">Общая сумма</div>
+        <div id="grandTotal" class="total-value">—</div>
       </div>
       <button id="submit" class="primary" disabled>Отправить</button>
     </div>
@@ -451,7 +455,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.2.1';
+    const APP_VERSION = 'v0.3.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -547,9 +551,11 @@
       const query = el('search').value.trim().toLowerCase();
       const products = group.products.filter((item) => item.product.toLowerCase().includes(query) && (!state.selectedOnly || getQuantity(group.supplier, item.product) > 0));
       const supplierTotal = getSupplierTotal(group);
-
-      const minimum = minimumNumber(info.minimum);
-      const missing = Math.max(0, minimum - supplierTotal);
+      const progress = getMinimumProgress(group, info);
+      const minimum = progress.minimum;
+      const missing = Math.max(0, minimum - progress.current);
+      const minimumLabel = formatMinimum(info);
+      const unavailable = isSelectedDateUnavailable(info);
       const cutoffText = info.cutoffTime
         ? `На сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску`
         : 'Ограничение времени не указано';
@@ -557,14 +563,14 @@
         <div class="supplier-card">
           <div class="supplier-top">
             <h2 class="supplier-name">${escapeHtml(group.supplier)}</h2>
-            <div class="supplier-inline ${missing ? 'short' : 'ok'}">Заявка ${money(supplierTotal)} · Мин. ${escapeHtml(info.minimum || '—')} ${minimum && !missing ? '✓' : ''}</div>
+            <div class="supplier-inline ${missing ? 'short' : 'ok'}">Заявка ${money(supplierTotal)} · Мин. ${escapeHtml(minimumLabel)} ${minimum && !missing ? '✓' : ''}</div>
           </div>
           <div class="supplier-controls"><button class="conditions" id="conditionsButton" type="button">Условия ⓘ</button></div>
           <div class="meta">${cutoffText}</div>
-          ${missing ? `<div class="meta" style="color:var(--danger)">До минималки не хватает ${money(missing)}</div>` : ''}
+          ${missing && !unavailable ? `<div class="meta" style="color:var(--danger)">До минималки не хватает ${escapeHtml(formatMinimumValue(missing, info))}</div>` : ''}
           <div id="conditionsText" class="meta hidden">${escapeHtml(info.orderInfo || 'Условия не указаны')} ${info.contact ? `<br>${linkPhones(info.contact)}` : ''}</div>
         </div>
-        ${renderProductTable(group.supplier, products, info, supplierTotal)}
+        ${unavailable ? renderUnavailableNotice(info) : renderProductTable(group.supplier, products, info, supplierTotal)}
       `;
       el('conditionsButton').addEventListener('click', () => el('conditionsText').classList.toggle('hidden'));
 
@@ -582,15 +588,14 @@
       const info = state.data.suppliers[state.activeSupplier] || {};
       const earliestDate = info.earliestDeliveryDate || state.data.today;
       el('date').min = earliestDate;
-      if (!el('date').value || el('date').value < earliestDate) el('date').value = earliestDate;
     }
 
     function renderProductTable(supplier, products, info, supplierTotal) {
       if (!products.length) return '<div class="empty">По поиску ничего не найдено</div>';
       return `<div class="product-table" role="table">
         <div class="product-sticky-head">
-          <div class="product-sums"><strong>${escapeHtml(supplier)}</strong><strong class="${supplierTotal < minimumNumber(info.minimum) ? 'short' : 'ok'}">${money(supplierTotal)} / мин. ${escapeHtml(info.minimum || '—')}</strong></div>
-          <div class="product-row product-header" role="row"><span>Наименование</span><span>Сумма</span><span>Кратность</span><span>Кол-во</span></div>
+          <div class="product-sums"><strong>${escapeHtml(supplier)}</strong><strong class="${getMinimumProgress(state.data.catalog.find((group) => group.supplier === supplier), info).missing ? 'short' : 'ok'}">${money(supplierTotal)} / мин. ${escapeHtml(formatMinimum(info))}</strong></div>
+          <div class="product-row product-header" role="row"><span>Наименование</span><span>Сумма</span><span>Кратн.</span><span>Кол-во</span></div>
         </div>
         ${products.map((item) => renderProduct(supplier, item)).join('')}</div>`;
     }
@@ -700,8 +705,7 @@
     }
 
     function updateTotals() {
-      const total = collectItems().reduce((sum, item) => sum + item.quantity * toClientNumber(item.price), 0);
-      el('grandTotal').textContent = money(total);
+      el('grandTotal').textContent = '—';
       updateVisibleSupplierSums();
       updateSubmitState();
     }
@@ -710,8 +714,9 @@
       const group = state.data.catalog.find((item) => item.supplier === state.activeSupplier);
       const info = state.data.suppliers[state.activeSupplier] || {};
       const currentItems = collectItems().filter((item) => item.supplier === state.activeSupplier);
-      const meetsMinimum = !minimumNumber(info.minimum) || getSupplierTotal(group) >= minimumNumber(info.minimum);
-      el('submit').disabled = state.submitting || !el('branch').value || !el('employee').value || !el('date').value || !currentItems.length || !meetsMinimum;
+      const progress = getMinimumProgress(group, info);
+      const meetsMinimum = !progress.minimum || !progress.missing;
+      el('submit').disabled = state.submitting || !el('branch').value || !el('employee').value || !el('date').value || isSelectedDateUnavailable(info) || !currentItems.length || !meetsMinimum;
       el('submit').textContent = state.submitting ? 'Отправка…' : 'Отправить';
     }
 
@@ -721,6 +726,43 @@
     }
 
     function minimumNumber(value) { return toClientNumber(String(value || '').replace(/р\.?/gi, '')); }
+
+    function minimumUnit(info) {
+      const unit = String(info.unit || '').trim();
+      if (/кг/i.test(unit)) return 'кг';
+      if (/(?:шт|штук)/i.test(unit)) return 'шт';
+      return '₽';
+    }
+
+    function formatMinimum(info) {
+      if (!info.minimum) return '—';
+      const raw = String(info.minimum).trim();
+      return /(?:₽|руб|р\.|кг|шт)/i.test(raw) ? raw : `${raw} ${minimumUnit(info)}`;
+    }
+
+    function formatMinimumValue(value, info) {
+      return minimumUnit(info) === '₽' ? money(value) : `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value)} ${minimumUnit(info)}`;
+    }
+
+    function getMinimumProgress(group, info) {
+      const minimum = minimumNumber(info.minimum);
+      if (!group) return { minimum, current: 0, missing: minimum };
+      const unit = minimumUnit(info);
+      let current = getSupplierTotal(group);
+      if (unit === 'шт') current = group.products.reduce((sum, item) => sum + getQuantity(group.supplier, item.product), 0);
+      if (unit === 'кг') current = group.products.reduce((sum, item) => sum + getQuantity(group.supplier, item.product) * (toClientNumber(item.unit) || 1), 0);
+      return { minimum, current, missing: Math.max(0, minimum - current) };
+    }
+
+    function isSelectedDateUnavailable(info) {
+      return Boolean(el('date').value && info.earliestDeliveryDate && el('date').value < info.earliestDeliveryDate);
+    }
+
+    function renderUnavailableNotice(info) {
+      const date = new Date(`${info.earliestDeliveryDate}T00:00:00`);
+      const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(date);
+      return `<div class="availability-notice"><strong>На сегодня заказ уже недоступен.</strong>Заказ доступен сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску.<br>Выберите ближайшую дату поставки — ${escapeHtml(formattedDate)}.</div>`;
+    }
 
     function getQuantity(supplier, product) {
       return toClientNumber(state.quantities[key(supplier, product)]);
