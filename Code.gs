@@ -94,6 +94,7 @@ function submitOrder(payload) {
     throw new Error('Поставщик «' + payload.supplier + '» принимает заявку на текущий день до '
       + supplier.cutoffTime + ' по Красноярску. Выберите следующую дату.');
   }
+  validateSupplierMinimum_(payload, supplier);
 
   const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
   const branchMap = readBranches_(employeesSheet).reduce((acc, branch) => {
@@ -111,8 +112,7 @@ function submitOrder(payload) {
 
   syncBranchSheetWithTemplate_(monthSheet, templateProducts);
 
-  const dateColumn = ensureDateColumn_(monthSheet, date);
-  clearPreviousOrder_(monthSheet, dateColumn);
+  const dateColumn = ensureSubmissionColumn_(monthSheet, date);
 
   const rowByProduct = buildProductRowIndex_(monthSheet);
   let total = 0;
@@ -136,7 +136,11 @@ function submitOrder(payload) {
   });
 
   monthSheet.getRange(CONFIG.branchSheet.initiatorRow, dateColumn).setValue(payload.employee);
-  monthSheet.getRange(CONFIG.branchSheet.totalRow, dateColumn).setValue(total);
+  // Общую сумму по колонке намеренно не заполняем: заявка отправляется
+  // отдельно поставщику, поэтому сумма записывается напротив его заголовка.
+  monthSheet.getRange(CONFIG.branchSheet.totalRow, dateColumn).clearContent();
+  const supplierRow = findSupplierRow_(monthSheet, payload.supplier);
+  if (supplierRow) monthSheet.getRange(supplierRow, dateColumn).setValue(total);
 
   return {
     ok: true,
@@ -471,13 +475,29 @@ function appendMissingTemplateRows_(sheet, products) {
   });
 }
 
-function ensureDateColumn_(sheet, date) {
+function ensureSubmissionColumn_(sheet, date) {
   const wanted = Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd.MM');
   const lastColumn = Math.max(sheet.getLastColumn(), CONFIG.branchSheet.firstDateCol);
   const dates = sheet.getRange(2, CONFIG.branchSheet.firstDateCol, 1, lastColumn - CONFIG.branchSheet.firstDateCol + 1).getDisplayValues()[0];
-  const index = dates.findIndex((value) => clean_(value) === wanted);
+  const indexes = [];
+  dates.forEach((value, index) => {
+    if (clean_(value) === wanted) indexes.push(index);
+  });
 
-  if (index >= 0) return CONFIG.branchSheet.firstDateCol + index;
+  // Первая заявка использует заранее созданную пустую колонку дня. Для каждой
+  // следующей заявки создаём отдельную колонку с тем же числом: так заявки двух
+  // менеджеров не перезаписывают друг друга, а ФИО остаётся однозначным.
+  for (const index of indexes) {
+    const column = CONFIG.branchSheet.firstDateCol + index;
+    if (!clean_(sheet.getRange(CONFIG.branchSheet.initiatorRow, column).getDisplayValue())) return column;
+  }
+  if (indexes.length) {
+    const column = CONFIG.branchSheet.firstDateCol + indexes[indexes.length - 1] + 1;
+    sheet.insertColumnBefore(column);
+    sheet.getRange(1, column).setValue(dayName_(date));
+    sheet.getRange(2, column).setValue(wanted);
+    return column;
+  }
 
   const column = lastColumn + 1;
   sheet.getRange(1, column).setValue(dayName_(date));
@@ -485,10 +505,33 @@ function ensureDateColumn_(sheet, date) {
   return column;
 }
 
-function clearPreviousOrder_(sheet, dateColumn) {
+function findSupplierRow_(sheet, supplier) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < CONFIG.branchSheet.initiatorRow) return;
-  sheet.getRange(CONFIG.branchSheet.initiatorRow, dateColumn, lastRow - CONFIG.branchSheet.initiatorRow + 1, 1).clearContent();
+  if (lastRow < CONFIG.branchSheet.firstProductRow) return 0;
+  const values = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol,
+    lastRow - CONFIG.branchSheet.firstProductRow + 1, 1).getDisplayValues();
+  const fontSizes = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol,
+    values.length, 1).getFontSizes();
+  const wanted = normalizeKey_(supplier);
+  const index = values.findIndex((row, offset) => normalizeKey_(row[0]) === wanted && Number(fontSizes[offset][0]) >= 16);
+  return index < 0 ? 0 : CONFIG.branchSheet.firstProductRow + index;
+}
+
+function validateSupplierMinimum_(payload, supplier) {
+  const minimum = toNumber_(supplier.minimum);
+  if (!minimum) return;
+  const unit = clean_(supplier.unit).toLowerCase();
+  let current = 0;
+  if (/кг/.test(unit)) {
+    current = payload.items.reduce((sum, item) => sum + toNumber_(item.quantity) * (toNumber_(item.unit) || 1), 0);
+  } else if (/(?:шт|штук)/.test(unit)) {
+    current = payload.items.reduce((sum, item) => sum + toNumber_(item.quantity), 0);
+  } else {
+    current = payload.items.reduce((sum, item) => sum + toNumber_(item.quantity) * toNumber_(item.price), 0);
+  }
+  if (current < minimum) {
+    throw new Error('Минимальный заказ у поставщика — ' + supplier.minimum + ' ' + (supplier.unit || '₽') + '.');
+  }
 }
 
 function buildProductRowIndex_(sheet) {
