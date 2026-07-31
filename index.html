@@ -408,7 +408,7 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.3.0</div>
+  <div id="appVersion" class="version-badge">v0.4.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -455,7 +455,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.3.0';
+    const APP_VERSION = 'v0.4.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -556,9 +556,11 @@
       const missing = Math.max(0, minimum - progress.current);
       const minimumLabel = formatMinimum(info);
       const unavailable = isSelectedDateUnavailable(info);
-      const cutoffText = info.cutoffTime
-        ? `На сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску`
-        : 'Ограничение времени не указано';
+      const cutoffText = info.deliveryRules?.length
+        ? `Доступные даты рассчитаны по графику приёма заявок`
+        : (info.cutoffTime
+          ? `На сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску`
+          : 'График приёма заявок не указан');
       el('supplierPanel').innerHTML = `
         <div class="supplier-card">
           <div class="supplier-top">
@@ -588,6 +590,7 @@
       const info = state.data.suppliers[state.activeSupplier] || {};
       const earliestDate = info.earliestDeliveryDate || state.data.today;
       el('date').min = earliestDate;
+      el('date').max = info.deliveryRules?.length ? info.availabilityThrough : '';
     }
 
     function renderProductTable(supplier, products, info, supplierTotal) {
@@ -755,13 +758,21 @@
     }
 
     function isSelectedDateUnavailable(info) {
-      return Boolean(el('date').value && info.earliestDeliveryDate && el('date').value < info.earliestDeliveryDate);
+      const selectedDate = el('date').value;
+      if (!selectedDate) return false;
+      if (info.deliveryRules?.length) {
+        return !(info.availableDeliveryDates || []).includes(selectedDate);
+      }
+      return Boolean(info.earliestDeliveryDate && selectedDate < info.earliestDeliveryDate);
     }
 
     function renderUnavailableNotice(info) {
-      const date = new Date(`${info.earliestDeliveryDate}T00:00:00`);
-      const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(date);
-      return `<div class="availability-notice"><strong>На сегодня заказ уже недоступен.</strong>Заказ доступен сегодня до ${escapeHtml(info.cutoffTime)} по Красноярску.<br>Выберите ближайшую дату поставки — ${escapeHtml(formattedDate)}.</div>`;
+      const nextDate = (info.availableDeliveryDates || []).find((date) => date >= el('date').value)
+        || info.earliestDeliveryDate;
+      const formattedDate = nextDate
+        ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${nextDate}T00:00:00`))
+        : '';
+      return `<div class="availability-notice"><strong>Заявку на выбранную дату уже нельзя принять.</strong>Дата не соответствует графику поставщика или время приёма заявки уже прошло.${formattedDate ? `<br>Ближайшая доступная дата — ${escapeHtml(formattedDate)}.` : ''}</div>`;
     }
 
     function getQuantity(supplier, product) {
