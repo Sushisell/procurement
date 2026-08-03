@@ -369,6 +369,26 @@
     .setup-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .setup-grid select { min-width: 0; padding-left: 7px; padding-right: 4px; font-size: 14px; }
     .setup-field label { font-size: 10px; }
+    .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 4px 0 10px; padding: 4px; border-radius: 14px; background: #e4e7ec; }
+    .mode-button { min-height: 42px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); font: inherit; font-weight: 850; }
+    .mode-button.active { background: #fff; color: var(--primary-dark); box-shadow: 0 2px 8px rgba(16, 24, 40, .12); }
+    .receipt-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+    .receipt-title { margin: 0; font-size: 19px; }
+    .receipt-meta { margin-top: 5px; color: var(--muted); font-size: 14px; }
+    .refresh-button { border: 1px solid var(--border); border-radius: 11px; background: #fff; padding: 8px 10px; color: var(--primary-dark); font-weight: 800; }
+    .receipt-row { padding: 12px 0; border-top: 1px solid #eaecf0; }
+    .receipt-row:first-child { border-top: 0; }
+    .receipt-ordered { margin-bottom: 8px; font-weight: 800; }
+    .receipt-fields { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 8px; }
+    .receipt-fields label { text-transform: none; letter-spacing: 0; }
+    .receipt-fields input { min-height: 44px; }
+    .receipt-fields input:not([type="number"]) { width: 100%; border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; font: inherit; }
+    .received-note { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: #ecfdf3; color: #027a48; font-weight: 750; }
+    .receipt-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    .secondary-action { min-height: 44px; border: 1px solid var(--primary); border-radius: 12px; background: #fff; color: var(--primary-dark); font-weight: 850; }
+    .edit-stepper { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; max-width: 180px; }
+    .edit-stepper button { height: 40px; border: 1px solid var(--border); background: #fff; color: var(--primary-dark); font-size: 22px; }
+    .edit-stepper output { text-align: center; font-weight: 850; }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
       .product-row { grid-template-columns: minmax(0, 1fr) 52px 92px; gap: 4px; }
@@ -377,12 +397,17 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.5.1</div>
+  <div id="appVersion" class="version-badge">v0.7.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
-      <p class="subtitle">Выберите филиал, ФИО, дату и поставщика.</p>
+      <p id="subtitle" class="subtitle">Выберите филиал, ФИО, дату и поставщика.</p>
     </header>
+
+    <nav class="mode-switch" aria-label="Раздел">
+      <button id="orderMode" class="mode-button active" type="button">Новая заявка</button>
+      <button id="receiptMode" class="mode-button" type="button">Приёмка</button>
+    </nav>
 
     <section id="setup" class="card">
       <div id="loading">Загружаю справочники…</div>
@@ -414,12 +439,15 @@
       <div class="search-tools"><input id="search" type="search" placeholder="Найти товар"><button id="selectedOnly" class="filter-button" type="button">Выбранные</button></div>
       <div id="supplierPanel"></div>
     </section>
+    <section id="receipt" class="hidden">
+      <div id="receiptPanel" class="card"><div class="empty">Выберите филиал, чтобы загрузить последнюю заявку.</div></div>
+    </section>
   </main>
 
   <footer class="bottom-bar">
     <div class="bottom-inner">
       <div>
-        <div class="total-label">Общая сумма</div>
+        <div id="footerLabel" class="total-label">Общая сумма</div>
         <div id="grandTotal" class="total-value">—</div>
       </div>
       <button id="submit" class="primary" disabled>Отправить</button>
@@ -428,7 +456,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.5.1';
+    const APP_VERSION = 'v0.7.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -439,6 +467,9 @@
       quantities: {},
       submitting: false,
       selectedOnly: false,
+      mode: 'order',
+      latestOrder: null,
+      loadingReceipt: false,
     };
 
     const el = (id) => document.getElementById(id);
@@ -469,10 +500,15 @@
     function bindEvents() {
       el('branch').addEventListener('change', () => {
         renderEmployees();
+        if (state.mode === 'receipt') loadLatestOrder();
         updateSubmitState();
       });
       el('employee').addEventListener('change', updateSubmitState);
       el('date').addEventListener('change', () => {
+        if (state.mode === 'receipt') {
+          loadLatestOrder();
+          return;
+        }
         renderSupplierOptions();
         renderSupplier();
         updateTotals();
@@ -487,6 +523,8 @@
       window.addEventListener('resize', updateStickyHeaderOffset);
       window.addEventListener('orientationchange', updateStickyHeaderOffset);
       el('submit').addEventListener('click', submitOrder);
+      el('orderMode').addEventListener('click', () => setMode('order'));
+      el('receiptMode').addEventListener('click', () => setMode('receipt'));
     }
 
     function renderBranches() {
@@ -595,6 +633,7 @@
     }
 
     function submitOrder() {
+      if (state.mode === 'receipt') return submitReceipt();
       if (state.submitting) return;
       state.submitting = true;
       updateSubmitState();
@@ -621,6 +660,151 @@
         });
     }
 
+    function setMode(mode) {
+      state.mode = mode;
+      const receiving = mode === 'receipt';
+      el('orderMode').classList.toggle('active', !receiving);
+      el('receiptMode').classList.toggle('active', receiving);
+      el('order').classList.toggle('hidden', receiving);
+      el('receipt').classList.toggle('hidden', !receiving);
+      el('date').closest('.setup-field').classList.remove('hidden');
+      el('supplier').closest('.setup-field').classList.toggle('hidden', receiving);
+      el('date').min = receiving ? '' : state.data.today;
+      el('date').closest('.setup-field').querySelector('label').textContent = receiving
+        ? 'День получения'
+        : 'Дата поставки (Красноярск)';
+      el('subtitle').textContent = receiving
+        ? 'Выберите филиал и своё ФИО, затем отметьте фактическую поставку.'
+        : 'Выберите филиал, ФИО, дату и поставщика.';
+      el('footerLabel').textContent = receiving ? 'Последняя заявка' : 'Общая сумма';
+      if (receiving) loadLatestOrder();
+      else updateTotals();
+      updateSubmitState();
+    }
+
+    function loadLatestOrder() {
+      const branch = el('branch').value;
+      state.latestOrder = null;
+      if (!branch) {
+        renderReceipt();
+        updateSubmitState();
+        return;
+      }
+      state.loadingReceipt = true;
+      el('receiptPanel').innerHTML = '<div class="empty">Загружаю последнюю заявку…</div>';
+      runServer('getLatestOrder', { branch, date: el('date').value })
+        .then((order) => {
+          state.loadingReceipt = false;
+          state.latestOrder = order;
+          renderReceipt();
+          updateSubmitState();
+        })
+        .catch((error) => {
+          state.loadingReceipt = false;
+          el('receiptPanel').innerHTML = `<div class="error">${escapeHtml(error.message || String(error))}</div>`;
+          updateSubmitState();
+        });
+    }
+
+    function renderReceipt() {
+      const order = state.latestOrder;
+      if (!el('branch').value) {
+        el('receiptPanel').innerHTML = '<div class="empty">Выберите филиал, чтобы загрузить последнюю заявку.</div>';
+        el('grandTotal').textContent = '—';
+        return;
+      }
+      if (!order) {
+        el('receiptPanel').innerHTML = '<div class="empty">У филиала пока нет отправленных заявок.</div>';
+        el('grandTotal').textContent = 'Нет заявок';
+        return;
+      }
+      const receiptItems = Object.fromEntries((order.receipt?.items || []).map((item) => [item.orderedProduct, item]));
+      const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+        .format(new Date(`${order.date}T00:00:00`));
+      el('receiptPanel').innerHTML = `
+        <div class="receipt-head">
+          <div><h2 class="receipt-title">${escapeHtml(order.supplier || 'Последняя заявка')}</h2>
+          <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
+          <button id="refreshReceipt" class="refresh-button" type="button">Обновить</button>
+        </div>
+        <div class="received-note">Статус: ${order.status === 'ordered' ? 'заказано — отмечайте поступления' : 'отправлено — заявку можно корректировать'}</div>
+        <div style="margin-top:12px">${order.items.filter((item) => {
+          const saved = receiptItems[item.product];
+          return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
+        }).map((item, index) => {
+          const saved = receiptItems[item.product] || {};
+          if (order.status !== 'ordered') return `<div class="receipt-row">
+            <div class="receipt-ordered">${escapeHtml(item.product)}</div>
+            <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}">
+              <button type="button" data-edit-step="-1">−</button><output>${item.quantity}</output><button type="button" data-edit-step="1">+</button>
+            </div>
+          </div>`;
+          const remaining = Math.max(0, item.quantity - (saved.actualQuantity || 0));
+          return `<div class="receipt-row">
+            <div class="receipt-ordered">${escapeHtml(item.product)} — осталось ${remaining} ${escapeHtml(item.unit || '')}</div>
+            <div class="receipt-fields">
+              <div><label for="actualProduct${index}">Что приехало</label><input id="actualProduct${index}" data-actual-product data-ordered-product="${escapeAttr(item.product)}" value="${escapeAttr(saved.actualProduct || item.product)}"></div>
+              <div><label for="actualQuantity${index}">Сейчас</label><input id="actualQuantity${index}" data-actual-quantity type="number" min="0" max="${remaining}" step="any" value="0"></div>
+            </div>
+          </div>`;
+        }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
+        ${order.status === 'submitted' ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
+      el('refreshReceipt').addEventListener('click', loadLatestOrder);
+      el('receiptPanel').querySelectorAll('[data-edit-step]').forEach((button) => button.addEventListener('click', () => {
+        const output = button.parentElement.querySelector('output');
+        output.value = Math.max(0, toClientNumber(output.value) + Number(button.dataset.editStep));
+        output.textContent = output.value;
+      }));
+      el('saveCorrection')?.addEventListener('click', saveOrderCorrection);
+      el('markOrdered')?.addEventListener('click', markOrderOrdered);
+      el('receiptPanel').querySelectorAll('input').forEach((input) => input.addEventListener('input', updateSubmitState));
+      el('grandTotal').textContent = `${order.items.length} поз.`;
+    }
+
+    function submitReceipt() {
+      if (state.submitting || !state.latestOrder) return;
+      state.submitting = true;
+      updateSubmitState();
+      el('status').textContent = 'Сохраняю приёмку…';
+      const products = Array.from(el('receiptPanel').querySelectorAll('[data-actual-product]'));
+      const quantities = Array.from(el('receiptPanel').querySelectorAll('[data-actual-quantity]'));
+      const items = products.map((input, index) => ({
+        orderedProduct: input.dataset.orderedProduct,
+        actualProduct: input.value.trim(),
+        actualQuantity: toClientNumber(quantities[index].value),
+      }));
+      runServer('receiveOrder', {
+        branch: el('branch').value,
+        employee: el('employee').value,
+        orderId: state.latestOrder.id,
+        items,
+      }).then(() => {
+        state.submitting = false;
+        el('status').textContent = 'Приёмка сохранена.';
+        loadLatestOrder();
+      }).catch((error) => {
+        state.submitting = false;
+        el('status').textContent = error.message || String(error);
+        updateSubmitState();
+      });
+    }
+
+    function saveOrderCorrection() {
+      const items = Array.from(el('receiptPanel').querySelectorAll('[data-edit-product]')).map((node) => ({
+        product: node.dataset.editProduct,
+        quantity: toClientNumber(node.querySelector('output').value),
+      }));
+      runServer('updateSubmittedOrder', { branch: el('branch').value, orderId: state.latestOrder.id, items })
+        .then(() => { el('status').textContent = 'Изменения сохранены.'; loadLatestOrder(); })
+        .catch((error) => { el('status').textContent = error.message || String(error); });
+    }
+
+    function markOrderOrdered() {
+      runServer('markOrderOrdered', { branch: el('branch').value, orderId: state.latestOrder.id })
+        .then(() => { el('status').textContent = 'Заявка отмечена как заказанная.'; loadLatestOrder(); })
+        .catch((error) => { el('status').textContent = error.message || String(error); });
+    }
+
     function loadBootstrapData() {
       runServer('getBootstrapData')
         .then(init)
@@ -645,7 +829,8 @@
 
     function runHttpApi(method, payload) {
       const url = new URL(API_URL);
-      url.searchParams.set('action', method === 'getBootstrapData' ? 'bootstrap' : 'submit');
+      const actions = { getBootstrapData: 'bootstrap', submitOrder: 'submit', getLatestOrder: 'latestOrder', receiveOrder: 'receive', updateSubmittedOrder: 'updateOrder', markOrderOrdered: 'markOrdered' };
+      url.searchParams.set('action', actions[method] || method);
       const options = method === 'getBootstrapData'
         ? { method: 'GET' }
         : {
@@ -687,6 +872,19 @@
     }
 
     function updateSubmitState() {
+      if (state.mode === 'receipt') {
+        if (state.latestOrder?.status === 'submitted') {
+          el('submit').disabled = true;
+          el('submit').textContent = 'Сначала отметьте «заказана»';
+          return;
+        }
+        const hasActualItems = Boolean(state.latestOrder) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-product]'))
+          .every((input) => input.value.trim()) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-quantity]'))
+          .some((input) => toClientNumber(input.value) > 0);
+        el('submit').disabled = state.submitting || state.loadingReceipt || !el('branch').value || !el('employee').value || !hasActualItems;
+        el('submit').textContent = state.submitting ? 'Сохранение…' : 'Сохранить приёмку';
+        return;
+      }
       const group = state.data.catalog.find((item) => item.supplier === state.activeSupplier);
       const info = state.data.suppliers[state.activeSupplier] || {};
       const currentItems = collectItems().filter((item) => item.supplier === state.activeSupplier);

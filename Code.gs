@@ -23,6 +23,9 @@ const CONFIG = {
     firstProductRow: 5,
     supplierMarkerColor: '#ffffff',
     obsoleteRowColor: '#d9d9d9',
+    receivedColor: '#b7e1cd',
+    partiallyReceivedColor: '#ffe599',
+    notReceivedColor: '#f4cccc',
   },
 };
 
@@ -55,6 +58,22 @@ function handleApiRequest_(action, payload) {
 
     if (action === 'submit' || action === 'submitOrder') {
       return jsonResponse_({ ok: true, data: submitOrder(payload) });
+    }
+
+    if (action === 'latestOrder' || action === 'getLatestOrder') {
+      return jsonResponse_({ ok: true, data: getLatestOrder(payload) });
+    }
+
+    if (action === 'receive' || action === 'receiveOrder') {
+      return jsonResponse_({ ok: true, data: receiveOrder(payload) });
+    }
+
+    if (action === 'updateOrder' || action === 'updateSubmittedOrder') {
+      return jsonResponse_({ ok: true, data: updateSubmittedOrder(payload) });
+    }
+
+    if (action === 'markOrdered' || action === 'markOrderOrdered') {
+      return jsonResponse_({ ok: true, data: markOrderOrdered(payload) });
     }
 
     throw new Error('Неизвестное действие API: ' + action);
@@ -136,7 +155,10 @@ function submitOrder(payload) {
       return;
     }
 
-    monthSheet.getRange(row, dateColumn).setValue(quantity);
+    monthSheet.getRange(row, dateColumn)
+      .setValue(quantity)
+      .setBackground(CONFIG.branchSheet.notReceivedColor)
+      .setNote('Получение не отмечено.');
   });
 
   monthSheet.getRange(CONFIG.branchSheet.initiatorRow, dateColumn).setValue(payload.employee);
@@ -153,6 +175,313 @@ function submitOrder(payload) {
     spreadsheetUrl: branch.url || master.getUrl(),
     sheetName: monthSheet.getName(),
   };
+}
+
+function getLatestOrder(payload) {
+  const context = getBranchContext_(payload && payload.branch);
+  const order = findLatestOrder_(context.spreadsheet, payload && payload.date);
+  if (!order) return null;
+
+  order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
+  if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
+  return order;
+}
+
+function receiveOrder(payload) {
+  if (!payload || !payload.branch) throw new Error('Выберите филиал.');
+  if (!payload.employee) throw new Error('Выберите ФИО принявшего товар.');
+  if (!payload.orderId) throw new Error('Не найдена заявка для приёмки.');
+  if (!Array.isArray(payload.items) || !payload.items.length) {
+    throw new Error('Укажите фактически полученные товары.');
+  }
+
+  const context = getBranchContext_(payload.branch);
+  const employees = readEmployees_(context.employeesSheet)[payload.branch] || [];
+  if (!employees.some((name) => normalizeKey_(name) === normalizeKey_(payload.employee))) {
+    throw new Error('Сотрудник не найден в выбранном филиале.');
+  }
+
+  const order = findOrderById_(context.spreadsheet, payload.orderId);
+  if (!order) throw new Error('Заявка больше не найдена. Обновите данные.');
+  if (order.status !== 'ordered') throw new Error('Сначала отметьте, что заявка заказана.');
+
+  const expected = {};
+  order.items.forEach((item) => { expected[normalizeKey_(item.product)] = item; });
+  payload.items.forEach((item) => {
+    const orderedProduct = clean_(item.orderedProduct);
+    const ordered = expected[normalizeKey_(orderedProduct)];
+    if (!ordered) throw new Error('Товар не относится к выбранной заявке: ' + orderedProduct);
+    const actualProduct = clean_(item.actualProduct);
+    const actualQuantity = toNumber_(item.actualQuantity);
+    if (!actualProduct && actualQuantity) throw new Error('Укажите фактически приехавший товар.');
+    if (actualQuantity < 0) throw new Error('Фактическое количество не может быть отрицательным.');
+  });
+
+  applyReceiptFormatting_(context.spreadsheet, order, payload.items, payload.employee, new Date());
+
+  return { ok: true, orderId: order.id, receivedAt: Utilities.formatDate(new Date(), CONFIG.timeZone, "yyyy-MM-dd'T'HH:mm:ss") };
+}
+
+function updateSubmittedOrder(payload) {
+  const context = getBranchContext_(payload && payload.branch);
+  const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
+  if (!order) throw new Error('Заявка больше не найдена.');
+  if (order.status === 'ordered') throw new Error('Заказанную заявку уже нельзя корректировать.');
+  if (!Array.isArray(payload.items)) throw new Error('Не переданы позиции заявки.');
+  const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
+  const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
+  const allowed = {};
+  order.items.forEach((item) => { allowed[normalizeKey_(item.product)] = true; });
+  if (!payload.items.some((item) => toNumber_(item.quantity) > 0)) {
+    throw new Error('В заявке должна остаться хотя бы одна позиция.');
+  }
+  payload.items.forEach((item) => {
+    if (!allowed[normalizeKey_(item.product)]) throw new Error('Нельзя добавить товар из другой заявки.');
+    const row = rowByProduct[normalizeKey_(item.product)];
+    if (!row) return;
+    const quantity = Math.max(0, toNumber_(item.quantity));
+    sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
+      .setValue(quantity || '')
+      .setBackground(CONFIG.branchSheet.notReceivedColor)
+      .setNote('Статус: отправлено. Получение не отмечено.');
+  });
+  const newTotal = payload.items.reduce((sum, item) => {
+    const row = rowByProduct[normalizeKey_(item.product)];
+    const price = row ? toNumber_(sheetAndColumn.sheet.getRange(row, CONFIG.branchSheet.priceCol).getDisplayValue()) : 0;
+    return sum + toNumber_(item.quantity) * price;
+  }, 0);
+  const supplierRow = findSupplierRow_(sheetAndColumn.sheet, order.supplier);
+  if (supplierRow) sheetAndColumn.sheet.getRange(supplierRow, sheetAndColumn.column).setValue(newTotal);
+  return findOrderById_(context.spreadsheet, order.id);
+}
+
+function markOrderOrdered(payload) {
+  const context = getBranchContext_(payload && payload.branch);
+  const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
+  if (!order) throw new Error('Заявка больше не найдена.');
+  const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
+  const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
+  order.items.forEach((item) => {
+    const row = rowByProduct[normalizeKey_(item.product)];
+    if (!row) return;
+    sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
+      .setBackground(CONFIG.branchSheet.notReceivedColor)
+      .setNote('Статус: заказано. Получение не отмечено.');
+  });
+  return findOrderById_(context.spreadsheet, order.id);
+}
+
+function getBranchContext_(branchName) {
+  if (!branchName) throw new Error('Выберите филиал.');
+  const master = getMasterSpreadsheet_();
+  const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
+  const branch = readBranches_(employeesSheet).find((item) => normalizeKey_(item.name) === normalizeKey_(branchName));
+  if (!branch) throw new Error('Не найден филиал: ' + branchName);
+  return {
+    master,
+    employeesSheet,
+    branch,
+    spreadsheet: branch.url ? SpreadsheetApp.openByUrl(branch.url) : master,
+  };
+}
+
+function findLatestOrder_(spreadsheet, deliveryDate) {
+  const candidates = [];
+  spreadsheet.getSheets().forEach((sheet) => {
+    if (!/^\d{2}\.\d{2}$/.test(sheet.getName()) || sheet.getLastColumn() < CONFIG.branchSheet.firstDateCol) return;
+    const year = 2000 + Number(sheet.getName().slice(3));
+    const month = Number(sheet.getName().slice(0, 2));
+    const lastColumn = sheet.getLastColumn();
+    const dates = sheet.getRange(2, CONFIG.branchSheet.firstDateCol, 1,
+      lastColumn - CONFIG.branchSheet.firstDateCol + 1).getDisplayValues()[0];
+    const initiators = sheet.getRange(CONFIG.branchSheet.initiatorRow, CONFIG.branchSheet.firstDateCol, 1,
+      dates.length).getDisplayValues()[0];
+    dates.forEach((date, index) => {
+      if (!clean_(date) || !clean_(initiators[index])) return;
+      const parts = clean_(date).split('.').map(Number);
+      const timestamp = Date.UTC(year, month - 1, parts[0]);
+      const isoDate = '20' + sheet.getName().slice(3) + '-' + sheet.getName().slice(0, 2)
+        + '-' + String(parts[0]).padStart(2, '0');
+      if (!deliveryDate || deliveryDate === isoDate) {
+        candidates.push({ sheet, column: CONFIG.branchSheet.firstDateCol + index, timestamp });
+      }
+    });
+  });
+  candidates.sort((a, b) => b.timestamp - a.timestamp || b.column - a.column);
+  return candidates.length ? readOrderFromColumn_(candidates[0].sheet, candidates[0].column) : null;
+}
+
+function findOrderById_(spreadsheet, orderId) {
+  const match = String(orderId).match(/^(.+):(\d+)$/);
+  if (!match) return null;
+  const sheet = spreadsheet.getSheetByName(match[1]);
+  const column = Number(match[2]);
+  if (!sheet || column < CONFIG.branchSheet.firstDateCol || column > sheet.getLastColumn()) return null;
+  return readOrderFromColumn_(sheet, column);
+}
+
+function readOrderFromColumn_(sheet, column) {
+  const date = clean_(sheet.getRange(2, column).getDisplayValue());
+  const initiator = clean_(sheet.getRange(CONFIG.branchSheet.initiatorRow, column).getDisplayValue());
+  if (!date || !initiator) return null;
+  const lastRow = sheet.getLastRow();
+  const height = lastRow - CONFIG.branchSheet.firstProductRow + 1;
+  const names = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getDisplayValues();
+  const quantities = sheet.getRange(CONFIG.branchSheet.firstProductRow, column, height, 1).getDisplayValues();
+  const prices = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.priceCol, height, 1).getDisplayValues();
+  const units = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.unitCol, height, 1).getDisplayValues();
+  const fontSizes = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getFontSizes();
+  let supplier = '';
+  let currentSupplier = '';
+  const items = [];
+  names.forEach((row, index) => {
+    const name = clean_(row[0]);
+    const isHeader = name && !clean_(prices[index][0]) && !clean_(units[index][0]) && Number(fontSizes[index][0]) >= 16;
+    if (isHeader) {
+      currentSupplier = name;
+      if (toNumber_(quantities[index][0])) supplier = name;
+      return;
+    }
+    const quantity = toNumber_(quantities[index][0]);
+    if (name && quantity) {
+      supplier = supplier || currentSupplier;
+      items.push({ product: name, quantity, unit: clean_(units[index][0]) });
+    }
+  });
+  if (!items.length) return null;
+  const dateParts = date.split('.');
+  const result = {
+    id: sheet.getName() + ':' + column,
+    date: '20' + sheet.getName().slice(3) + '-' + sheet.getName().slice(0, 2) + '-' + dateParts[0].padStart(2, '0'),
+    supplier,
+    initiator,
+    items,
+  };
+  result.status = readOrderStatus_(sheet, column, result.items);
+  return result;
+}
+
+function readOrderStatus_(sheet, column, items) {
+  const rowByProduct = buildProductRowIndex_(sheet);
+  return items.some((item) => {
+    const row = rowByProduct[normalizeKey_(item.product)];
+    const note = row ? clean_(sheet.getRange(row, column).getNote()) : '';
+    return /Статус:\s*заказано/i.test(note) || /^Получено/i.test(note);
+  }) ? 'ordered' : 'submitted';
+}
+
+function readReceiptFromOrderCells_(spreadsheet, order) {
+  const sheetAndColumn = getOrderSheetAndColumn_(spreadsheet, order.id);
+  if (!sheetAndColumn) return null;
+  const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
+  const items = [];
+  let receivedAt = '';
+  let employee = '';
+  let hasSavedReceipt = false;
+
+  order.items.forEach((ordered) => {
+    const row = rowByProduct[normalizeKey_(ordered.product)];
+    if (!row) return;
+    const range = sheetAndColumn.sheet.getRange(row, sheetAndColumn.column);
+    const note = String(range.getNote() || '');
+    const parsed = parseReceiptNote_(note);
+    if (parsed.events.length) hasSavedReceipt = true;
+    receivedAt = parsed.events.length ? parsed.events[parsed.events.length - 1].date : receivedAt;
+    employee = parsed.events.length ? parsed.events[parsed.events.length - 1].employee : employee;
+    items.push({
+      orderedProduct: ordered.product,
+      actualProduct: parsed.actualProduct || ordered.product,
+      actualQuantity: parsed.total,
+      remainingQuantity: Math.max(0, ordered.quantity - parsed.total),
+    });
+  });
+
+  return hasSavedReceipt ? { receivedAt, employee, items } : null;
+}
+
+function markOrderAsNotReceived_(spreadsheet, order) {
+  const sheetAndColumn = getOrderSheetAndColumn_(spreadsheet, order.id);
+  if (!sheetAndColumn) return;
+  const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
+  order.items.forEach((item) => {
+    const row = rowByProduct[normalizeKey_(item.product)];
+    if (!row) return;
+    sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
+      .setBackground(CONFIG.branchSheet.notReceivedColor)
+      .setNote('Получение не отмечено.');
+  });
+}
+
+function applyReceiptFormatting_(spreadsheet, order, receivedItems, employee, receivedAt) {
+  const sheetAndColumn = getOrderSheetAndColumn_(spreadsheet, order.id);
+  if (!sheetAndColumn) return;
+  const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
+  const receivedByProduct = {};
+  receivedItems.forEach((item) => {
+    receivedByProduct[normalizeKey_(item.orderedProduct)] = item;
+  });
+  const dateText = Utilities.formatDate(receivedAt, CONFIG.timeZone, 'dd.MM.yyyy');
+
+  order.items.forEach((ordered) => {
+    const row = rowByProduct[normalizeKey_(ordered.product)];
+    if (!row) return;
+    const received = receivedByProduct[normalizeKey_(ordered.product)] || {};
+    const addedQuantity = toNumber_(received.actualQuantity);
+    const actualProduct = clean_(received.actualProduct) || ordered.product;
+    const range = sheetAndColumn.sheet.getRange(row, sheetAndColumn.column);
+    const previous = parseReceiptNote_(range.getNote());
+    const actualQuantity = previous.total + addedQuantity;
+    let color = CONFIG.branchSheet.notReceivedColor;
+    const event = addedQuantity > 0
+      ? 'Получено ' + formatReceiptQuantity_(addedQuantity, ordered.unit)
+        + ' от ' + dateText + ' сотрудником ' + employee
+      : '';
+    const previousLines = previous.events.map((item) => item.text);
+    if (previous.actualProduct) previousLines.push('Фактически приехал товар: ' + previous.actualProduct + '.');
+    let note = ['Статус: заказано.'].concat(previousLines).concat(event || []).join('\n');
+    if (actualQuantity >= ordered.quantity) {
+      color = CONFIG.branchSheet.receivedColor;
+    } else if (actualQuantity > 0) {
+      color = CONFIG.branchSheet.partiallyReceivedColor;
+    } else {
+      note += '\nПолучение не отмечено.';
+    }
+    if (addedQuantity > 0 && normalizeKey_(actualProduct) !== normalizeKey_(ordered.product)) {
+      note += '\nФактически приехал товар: ' + actualProduct + '.';
+    }
+    range.setBackground(color).setNote(note);
+  });
+}
+
+function parseReceiptNote_(value) {
+  const note = String(value || '');
+  const events = [];
+  note.split(/\r?\n/).forEach((line) => {
+    const match = clean_(line).match(/^Получено(?: полностью:)?\s*([\d.,]+)(?:\s+[^\s]+)?(?:\s+из\s+[\d.,]+(?:\s+[^\s]+)?)?\s+от\s+(\d{2}\.\d{2}\.\d{4})\s+сотрудником\s+(.+)$/i);
+    if (match) events.push({ quantity: toNumber_(match[1]), date: match[2], employee: clean_(match[3]), text: clean_(line) });
+  });
+  const actualProducts = Array.from(note.matchAll(/Фактически приехал товар:\s*(.+?)\./gi));
+  return {
+    events,
+    total: events.reduce((sum, item) => sum + item.quantity, 0),
+    actualProduct: actualProducts.length ? clean_(actualProducts[actualProducts.length - 1][1]) : '',
+  };
+}
+
+function getOrderSheetAndColumn_(spreadsheet, orderId) {
+  const match = String(orderId).match(/^(.+):(\d+)$/);
+  if (!match) return null;
+  const sheet = spreadsheet.getSheetByName(match[1]);
+  const column = Number(match[2]);
+  return sheet && column >= CONFIG.branchSheet.firstDateCol && column <= sheet.getLastColumn()
+    ? { sheet, column }
+    : null;
+}
+
+function formatReceiptQuantity_(quantity, unit) {
+  const value = Number(quantity);
+  const formatted = Number.isInteger(value) ? String(value) : String(value).replace('.', ',');
+  return formatted + (clean_(unit) ? ' ' + clean_(unit) : ' шт');
 }
 
 function getMasterSpreadsheet_() {
@@ -544,13 +873,14 @@ function syncBranchSheetWithTemplate_(sheet, templateProducts) {
     if (row) {
       sheet.getRange(row, CONFIG.branchSheet.priceCol).setValue(item.price || '');
       sheet.getRange(row, CONFIG.branchSheet.unitCol).setValue(item.unit || '');
-      sheet.getRange(row, 1, 1, sheet.getMaxColumns()).setBackground(null);
+      // Не очищаем цвета в колонках заявок: там хранится статус приёмки.
+      sheet.getRange(row, 1, 1, CONFIG.branchSheet.unitCol).setBackground(null);
     }
   });
 
   Object.keys(currentRows).forEach((key) => {
     if (!templateKeys[key]) {
-      sheet.getRange(currentRows[key], 1, 1, sheet.getMaxColumns())
+      sheet.getRange(currentRows[key], 1, 1, CONFIG.branchSheet.unitCol)
         .setBackground(CONFIG.branchSheet.obsoleteRowColor);
     }
   });
