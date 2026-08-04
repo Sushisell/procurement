@@ -469,6 +469,7 @@
       selectedOnly: false,
       mode: 'order',
       latestOrder: null,
+      receiptOrders: [],
       loadingReceipt: false,
     };
 
@@ -676,7 +677,7 @@
       el('subtitle').textContent = receiving
         ? 'Выберите филиал и своё ФИО, затем отметьте фактическую поставку.'
         : 'Выберите филиал, ФИО, дату и поставщика.';
-      el('footerLabel').textContent = receiving ? 'Последняя заявка' : 'Общая сумма';
+      el('footerLabel').textContent = receiving ? 'Выбранная заявка' : 'Общая сумма';
       if (receiving) loadLatestOrder();
       else updateTotals();
       updateSubmitState();
@@ -685,6 +686,7 @@
     function loadLatestOrder() {
       const branch = el('branch').value;
       state.latestOrder = null;
+      state.receiptOrders = [];
       if (!branch) {
         renderReceipt();
         updateSubmitState();
@@ -692,10 +694,11 @@
       }
       state.loadingReceipt = true;
       el('receiptPanel').innerHTML = '<div class="empty">Загружаю последнюю заявку…</div>';
-      runServer('getLatestOrder', { branch, date: el('date').value })
-        .then((order) => {
+      runServer('getOrders', { branch, date: el('date').value })
+        .then((orders) => {
           state.loadingReceipt = false;
-          state.latestOrder = order;
+          state.receiptOrders = orders || [];
+          state.latestOrder = state.receiptOrders[0] || null;
           renderReceipt();
           updateSubmitState();
         })
@@ -722,6 +725,10 @@
       const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
         .format(new Date(`${order.date}T00:00:00`));
       el('receiptPanel').innerHTML = `
+        <div class="setup-field" style="margin-bottom:12px">
+          <label for="receiptSupplier">Поставщик</label>
+          <select id="receiptSupplier">${state.receiptOrders.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === order.id ? ' selected' : ''}>${escapeHtml(item.supplier)}</option>`).join('')}</select>
+        </div>
         <div class="receipt-head">
           <div><h2 class="receipt-title">${escapeHtml(order.supplier || 'Последняя заявка')}</h2>
           <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
@@ -750,6 +757,11 @@
         }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
         ${order.status === 'submitted' ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
       el('refreshReceipt').addEventListener('click', loadLatestOrder);
+      el('receiptSupplier').addEventListener('change', (event) => {
+        state.latestOrder = state.receiptOrders.find((item) => item.id === event.target.value) || null;
+        renderReceipt();
+        updateSubmitState();
+      });
       el('receiptPanel').querySelectorAll('[data-edit-step]').forEach((button) => button.addEventListener('click', () => {
         const output = button.parentElement.querySelector('output');
         output.value = Math.max(0, toClientNumber(output.value) + Number(button.dataset.editStep));
@@ -829,7 +841,7 @@
 
     function runHttpApi(method, payload) {
       const url = new URL(API_URL);
-      const actions = { getBootstrapData: 'bootstrap', submitOrder: 'submit', getLatestOrder: 'latestOrder', receiveOrder: 'receive', updateSubmittedOrder: 'updateOrder', markOrderOrdered: 'markOrdered' };
+      const actions = { getBootstrapData: 'bootstrap', submitOrder: 'submit', getLatestOrder: 'latestOrder', getOrders: 'orders', receiveOrder: 'receive', updateSubmittedOrder: 'updateOrder', markOrderOrdered: 'markOrdered' };
       url.searchParams.set('action', actions[method] || method);
       const options = method === 'getBootstrapData'
         ? { method: 'GET' }
