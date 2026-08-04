@@ -140,6 +140,13 @@ function submitOrder(payload) {
   syncBranchSheetWithTemplate_(monthSheet, templateProducts);
 
   const dateColumn = ensureSubmissionColumn_(monthSheet, date);
+  const supplierRow = findSupplierRow_(monthSheet, payload.supplier);
+  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
+  const existingOrder = readOrdersFromColumn_(monthSheet, dateColumn)
+    .find((order) => normalizeKey_(order.supplier) === normalizeKey_(payload.supplier));
+  if (existingOrder && existingOrder.status === 'ordered') {
+    throw new Error('Заказанную заявку уже нельзя корректировать.');
+  }
 
   const rowByProduct = buildProductRowIndex_(monthSheet);
   // Повторная отправка поставщику является редактированием его части заявки:
@@ -171,11 +178,10 @@ function submitOrder(payload) {
   });
 
   monthSheet.getRange(CONFIG.branchSheet.initiatorRow, dateColumn).setValue(payload.employee);
-  // Общую сумму по колонке намеренно не заполняем: заявка отправляется
-  // отдельно поставщику, поэтому сумма записывается напротив его заголовка.
   monthSheet.getRange(CONFIG.branchSheet.totalRow, dateColumn).clearContent();
-  const supplierRow = findSupplierRow_(monthSheet, payload.supplier);
-  if (supplierRow) monthSheet.getRange(supplierRow, dateColumn).setValue(total);
+  monthSheet.getRange(supplierRow, dateColumn)
+    .clearContent()
+    .setNote('Статус: отправлено.');
 
   return {
     ok: true,
@@ -257,15 +263,14 @@ function updateSubmittedOrder(payload) {
     sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
       .setValue(quantity || '')
       .setBackground(CONFIG.branchSheet.notReceivedColor)
-      .setNote('Статус: отправлено. Получение не отмечено.');
+      .setNote('Получение не отмечено.');
   });
-  const newTotal = payload.items.reduce((sum, item) => {
-    const row = rowByProduct[normalizeKey_(item.product)];
-    const price = row ? toNumber_(sheetAndColumn.sheet.getRange(row, CONFIG.branchSheet.priceCol).getDisplayValue()) : 0;
-    return sum + toNumber_(item.quantity) * price;
-  }, 0);
   const supplierRow = findSupplierRow_(sheetAndColumn.sheet, order.supplier);
-  if (supplierRow) sheetAndColumn.sheet.getRange(supplierRow, sheetAndColumn.column).setValue(newTotal);
+  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + order.supplier);
+  sheetAndColumn.sheet.getRange(CONFIG.branchSheet.totalRow, sheetAndColumn.column).clearContent();
+  sheetAndColumn.sheet.getRange(supplierRow, sheetAndColumn.column)
+    .clearContent()
+    .setNote('Статус: отправлено.');
   return findOrderById_(context.spreadsheet, order.id);
 }
 
@@ -274,13 +279,19 @@ function markOrderOrdered(payload) {
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
+  const supplierRow = findSupplierRow_(sheetAndColumn.sheet, order.supplier);
+  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + order.supplier);
+  sheetAndColumn.sheet.getRange(CONFIG.branchSheet.totalRow, sheetAndColumn.column).clearContent();
+  sheetAndColumn.sheet.getRange(supplierRow, sheetAndColumn.column)
+    .clearContent()
+    .setNote('Статус: заказано.');
   const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
   order.items.forEach((item) => {
     const row = rowByProduct[normalizeKey_(item.product)];
     if (!row) return;
     sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
       .setBackground(CONFIG.branchSheet.notReceivedColor)
-      .setNote('Статус: заказано. Получение не отмечено.');
+      .setNote('Получение не отмечено.');
   });
   return findOrderById_(context.spreadsheet, order.id);
 }
@@ -387,12 +398,18 @@ function readOrdersFromColumn_(sheet, column) {
     initiator,
     items: itemsBySupplier[supplier],
     };
-    result.status = readOrderStatus_(sheet, column, result.items);
+    result.status = readOrderStatus_(sheet, column, supplier, result.items);
     return result;
   });
 }
 
-function readOrderStatus_(sheet, column, items) {
+function readOrderStatus_(sheet, column, supplier, items) {
+  const supplierRow = findSupplierRow_(sheet, supplier);
+  const supplierNote = supplierRow ? clean_(sheet.getRange(supplierRow, column).getNote()) : '';
+  if (/Статус:\s*заказано/i.test(supplierNote)) return 'ordered';
+  if (/Статус:\s*отправлено/i.test(supplierNote)) return 'submitted';
+
+  // Совместимость с заявками, созданными до переноса статуса в строку поставщика.
   const rowByProduct = buildProductRowIndex_(sheet);
   return items.some((item) => {
     const row = rowByProduct[normalizeKey_(item.product)];
@@ -469,13 +486,13 @@ function applyReceiptFormatting_(spreadsheet, order, receivedItems, employee, re
       : '';
     const previousLines = previous.events.map((item) => item.text);
     if (previous.actualProduct) previousLines.push('Фактически приехал товар: ' + previous.actualProduct + '.');
-    let note = ['Статус: заказано.'].concat(previousLines).concat(event || []).join('\n');
+    let note = previousLines.concat(event || []).filter(Boolean).join('\n');
     if (actualQuantity >= ordered.quantity) {
       color = CONFIG.branchSheet.receivedColor;
     } else if (actualQuantity > 0) {
       color = CONFIG.branchSheet.partiallyReceivedColor;
     } else {
-      note += '\nПолучение не отмечено.';
+      note += (note ? '\n' : '') + 'Получение не отмечено.';
     }
     if (addedQuantity > 0 && normalizeKey_(actualProduct) !== normalizeKey_(ordered.product)) {
       note += '\nФактически приехал товар: ' + actualProduct + '.';
