@@ -64,6 +64,10 @@ function handleApiRequest_(action, payload) {
       return jsonResponse_({ ok: true, data: getLatestOrder(payload) });
     }
 
+    if (action === 'orders' || action === 'getOrders') {
+      return jsonResponse_({ ok: true, data: getOrders(payload) });
+    }
+
     if (action === 'receive' || action === 'receiveOrder') {
       return jsonResponse_({ ok: true, data: receiveOrder(payload) });
     }
@@ -138,6 +142,11 @@ function submitOrder(payload) {
   const dateColumn = ensureSubmissionColumn_(monthSheet, date);
 
   const rowByProduct = buildProductRowIndex_(monthSheet);
+  // Повторная отправка поставщику является редактированием его части заявки:
+  // удаляем старые количества этого поставщика, не затрагивая остальных.
+  getSupplierProductRows_(monthSheet, payload.supplier).forEach((row) => {
+    monthSheet.getRange(row, dateColumn).clearContent().clearNote().setBackground(null);
+  });
   let total = 0;
   const warnings = [];
 
@@ -178,13 +187,18 @@ function submitOrder(payload) {
 }
 
 function getLatestOrder(payload) {
-  const context = getBranchContext_(payload && payload.branch);
-  const order = findLatestOrder_(context.spreadsheet, payload && payload.date);
-  if (!order) return null;
+  const orders = getOrders(payload);
+  return orders.length ? orders[0] : null;
+}
 
-  order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
-  if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
-  return order;
+function getOrders(payload) {
+  const context = getBranchContext_(payload && payload.branch);
+  const orders = findOrders_(context.spreadsheet, payload && payload.date);
+  orders.forEach((order) => {
+    order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
+    if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
+  });
+  return orders;
 }
 
 function receiveOrder(payload) {
@@ -286,6 +300,11 @@ function getBranchContext_(branchName) {
 }
 
 function findLatestOrder_(spreadsheet, deliveryDate) {
+  const orders = findOrders_(spreadsheet, deliveryDate);
+  return orders.length ? orders[0] : null;
+}
+
+function findOrders_(spreadsheet, deliveryDate) {
   const candidates = [];
   spreadsheet.getSheets().forEach((sheet) => {
     if (!/^\d{2}\.\d{2}$/.test(sheet.getName()) || sheet.getLastColumn() < CONFIG.branchSheet.firstDateCol) return;
@@ -308,22 +327,34 @@ function findLatestOrder_(spreadsheet, deliveryDate) {
     });
   });
   candidates.sort((a, b) => b.timestamp - a.timestamp || b.column - a.column);
-  return candidates.length ? readOrderFromColumn_(candidates[0].sheet, candidates[0].column) : null;
+  const orders = [];
+  candidates.forEach((candidate) => {
+    readOrdersFromColumn_(candidate.sheet, candidate.column).forEach((order) => orders.push(order));
+  });
+  return orders;
 }
 
 function findOrderById_(spreadsheet, orderId) {
-  const match = String(orderId).match(/^(.+):(\d+)$/);
+  const match = String(orderId).match(/^(.+):(\d+)(?::(.+))?$/);
   if (!match) return null;
   const sheet = spreadsheet.getSheetByName(match[1]);
   const column = Number(match[2]);
   if (!sheet || column < CONFIG.branchSheet.firstDateCol || column > sheet.getLastColumn()) return null;
-  return readOrderFromColumn_(sheet, column);
+  const orders = readOrdersFromColumn_(sheet, column);
+  if (!match[3]) return orders.length ? orders[0] : null;
+  const supplier = decodeURIComponent(match[3]);
+  return orders.find((order) => normalizeKey_(order.supplier) === normalizeKey_(supplier)) || null;
 }
 
 function readOrderFromColumn_(sheet, column) {
+  const orders = readOrdersFromColumn_(sheet, column);
+  return orders.length ? orders[0] : null;
+}
+
+function readOrdersFromColumn_(sheet, column) {
   const date = clean_(sheet.getRange(2, column).getDisplayValue());
   const initiator = clean_(sheet.getRange(CONFIG.branchSheet.initiatorRow, column).getDisplayValue());
-  if (!date || !initiator) return null;
+  if (!date || !initiator) return [];
   const lastRow = sheet.getLastRow();
   const height = lastRow - CONFIG.branchSheet.firstProductRow + 1;
   const names = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getDisplayValues();
@@ -331,34 +362,34 @@ function readOrderFromColumn_(sheet, column) {
   const prices = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.priceCol, height, 1).getDisplayValues();
   const units = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.unitCol, height, 1).getDisplayValues();
   const fontSizes = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getFontSizes();
-  let supplier = '';
   let currentSupplier = '';
-  const items = [];
+  const itemsBySupplier = {};
   names.forEach((row, index) => {
     const name = clean_(row[0]);
     const isHeader = name && !clean_(prices[index][0]) && !clean_(units[index][0]) && Number(fontSizes[index][0]) >= 16;
     if (isHeader) {
       currentSupplier = name;
-      if (toNumber_(quantities[index][0])) supplier = name;
+      if (!itemsBySupplier[currentSupplier]) itemsBySupplier[currentSupplier] = [];
       return;
     }
     const quantity = toNumber_(quantities[index][0]);
     if (name && quantity) {
-      supplier = supplier || currentSupplier;
-      items.push({ product: name, quantity, unit: clean_(units[index][0]) });
+      if (!itemsBySupplier[currentSupplier]) itemsBySupplier[currentSupplier] = [];
+      itemsBySupplier[currentSupplier].push({ product: name, quantity, unit: clean_(units[index][0]) });
     }
   });
-  if (!items.length) return null;
   const dateParts = date.split('.');
-  const result = {
-    id: sheet.getName() + ':' + column,
+  return Object.keys(itemsBySupplier).filter((supplier) => supplier && itemsBySupplier[supplier].length).map((supplier) => {
+    const result = {
+    id: sheet.getName() + ':' + column + ':' + encodeURIComponent(supplier),
     date: '20' + sheet.getName().slice(3) + '-' + sheet.getName().slice(0, 2) + '-' + dateParts[0].padStart(2, '0'),
     supplier,
     initiator,
-    items,
-  };
-  result.status = readOrderStatus_(sheet, column, result.items);
-  return result;
+    items: itemsBySupplier[supplier],
+    };
+    result.status = readOrderStatus_(sheet, column, result.items);
+    return result;
+  });
 }
 
 function readOrderStatus_(sheet, column, items) {
@@ -469,7 +500,7 @@ function parseReceiptNote_(value) {
 }
 
 function getOrderSheetAndColumn_(spreadsheet, orderId) {
-  const match = String(orderId).match(/^(.+):(\d+)$/);
+  const match = String(orderId).match(/^(.+):(\d+)(?::.+)?$/);
   if (!match) return null;
   const sheet = spreadsheet.getSheetByName(match[1]);
   const column = Number(match[2]);
@@ -935,20 +966,9 @@ function ensureSubmissionColumn_(sheet, date) {
     if (clean_(value) === wanted) indexes.push(index);
   });
 
-  // Первая заявка использует заранее созданную пустую колонку дня. Для каждой
-  // следующей заявки создаём отдельную колонку с тем же числом: так заявки двух
-  // менеджеров не перезаписывают друг друга, а ФИО остаётся однозначным.
-  for (const index of indexes) {
-    const column = CONFIG.branchSheet.firstDateCol + index;
-    if (!clean_(sheet.getRange(CONFIG.branchSheet.initiatorRow, column).getDisplayValue())) return column;
-  }
-  if (indexes.length) {
-    const column = CONFIG.branchSheet.firstDateCol + indexes[indexes.length - 1] + 1;
-    sheet.insertColumnBefore(column);
-    sheet.getRange(1, column).setValue(dayName_(date));
-    sheet.getRange(2, column).setValue(wanted);
-    return column;
-  }
+  // Все заявки на одну дату хранятся в одной колонке. Повторная отправка
+  // дополняет/редактирует позиции нужного поставщика, не создавая дубль даты.
+  if (indexes.length) return CONFIG.branchSheet.firstDateCol + indexes[0];
 
   const column = lastColumn + 1;
   sheet.getRange(1, column).setValue(dayName_(date));
@@ -966,6 +986,29 @@ function findSupplierRow_(sheet, supplier) {
   const wanted = normalizeKey_(supplier);
   const index = values.findIndex((row, offset) => normalizeKey_(row[0]) === wanted && Number(fontSizes[offset][0]) >= 16);
   return index < 0 ? 0 : CONFIG.branchSheet.firstProductRow + index;
+}
+
+function getSupplierProductRows_(sheet, supplier) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < CONFIG.branchSheet.firstProductRow) return [];
+  const height = lastRow - CONFIG.branchSheet.firstProductRow + 1;
+  const names = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getDisplayValues();
+  const prices = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.priceCol, height, 1).getDisplayValues();
+  const units = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.unitCol, height, 1).getDisplayValues();
+  const fontSizes = sheet.getRange(CONFIG.branchSheet.firstProductRow, CONFIG.branchSheet.productCol, height, 1).getFontSizes();
+  const wanted = normalizeKey_(supplier);
+  let active = false;
+  const rows = [];
+  names.forEach((value, index) => {
+    const name = clean_(value[0]);
+    const header = name && !clean_(prices[index][0]) && !clean_(units[index][0]) && Number(fontSizes[index][0]) >= 16;
+    if (header) {
+      active = normalizeKey_(name) === wanted;
+    } else if (active && name) {
+      rows.push(CONFIG.branchSheet.firstProductRow + index);
+    }
+  });
+  return rows;
 }
 
 function validateSupplierMinimum_(payload, supplier) {
