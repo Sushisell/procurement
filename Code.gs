@@ -184,7 +184,7 @@ function submitOrder(payload) {
   if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
   const existingOrder = readOrdersFromColumn_(monthSheet, dateColumn)
     .find((order) => normalizeKey_(order.supplier) === normalizeKey_(payload.supplier));
-  if (existingOrder && existingOrder.status === 'ordered') {
+  if (existingOrder && isOrderLocked_(master, existingOrder, payload.branch)) {
     throw new Error('Заказанную заявку уже нельзя корректировать.');
   }
 
@@ -267,11 +267,43 @@ function getLatestOrder(payload) {
 function getOrders(payload) {
   const context = getBranchContext_(payload && payload.branch);
   const orders = findOrders_(context.spreadsheet, payload && payload.date);
+  applyRequestJournalStatuses_(context.master, orders, payload && payload.branch);
   orders.forEach((order) => {
     order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
     if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
   });
   return orders;
+}
+
+
+function isOrderLocked_(spreadsheet, order, branch) {
+  if (order.status === 'ordered') return true;
+  const journalStatuses = readRequestJournalOrderStatuses_(spreadsheet, order, branch);
+  return journalStatuses[normalizeKey_('Заказано')]
+    || journalStatuses[normalizeKey_('Получено')]
+    || journalStatuses[normalizeKey_('Получено не все')];
+}
+
+function readRequestJournalOrderStatuses_(spreadsheet, order, branch) {
+  const sheet = getRequestJournalSheet_(spreadsheet, formatRussianDate_(order.date));
+  const values = sheet.getDataRange().getDisplayValues();
+  const statuses = {};
+  values.slice(1).forEach((row) => {
+    if (normalizeKey_(row[1]) !== normalizeKey_(formatRussianDate_(order.date))
+      || normalizeKey_(row[2]) !== normalizeKey_(order.supplier)
+      || normalizeKey_(row[6]) !== normalizeKey_(branch)) return;
+    const status = normalizeKey_(row[8]);
+    if (status) statuses[status] = true;
+  });
+  return statuses;
+}
+
+function applyRequestJournalStatuses_(spreadsheet, orders, branch) {
+  if (!orders.length) return;
+
+  orders.forEach((order) => {
+    if (isOrderLocked_(spreadsheet, order, branch)) order.status = 'ordered';
+  });
 }
 
 function receiveOrder(payload) {
@@ -314,7 +346,7 @@ function updateSubmittedOrder(payload) {
   const context = getBranchContext_(payload && payload.branch);
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
-  if (order.status === 'ordered') throw new Error('Заказанную заявку уже нельзя корректировать.');
+  if (isOrderLocked_(context.master, order, payload.branch)) throw new Error('Заказанную заявку уже нельзя корректировать.');
   if (!Array.isArray(payload.items)) throw new Error('Не переданы позиции заявки.');
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
   const requestRows = [];
