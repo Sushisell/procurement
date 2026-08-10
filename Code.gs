@@ -13,6 +13,11 @@ const CONFIG = {
     branchNameCol: 4,
     branchUrlCol: 5,
   },
+  cache: {
+    bootstrapKey: 'bootstrap-static-v1',
+    ttlSeconds: 900,
+    maxValueLength: 95000,
+  },
   branchSheet: {
     productCol: 3,
     priceCol: 4,
@@ -93,17 +98,45 @@ function jsonResponse_(payload) {
 }
 
 function getBootstrapData() {
+  const cached = readCachedBootstrapData_();
+  const data = cached || buildBootstrapData_();
+  data.today = Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd');
+  return data;
+}
+
+function buildBootstrapData_() {
   const master = getMasterSpreadsheet_();
   const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
   const suppliers = readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers));
-
-  return {
+  const data = {
     branches: readBranches_(employeesSheet),
     employeesByBranch: readEmployees_(employeesSheet),
     suppliers,
     catalog: readCatalog_(master),
-    today: Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'),
   };
+
+  writeCachedBootstrapData_(data);
+  return data;
+}
+
+function readCachedBootstrapData_() {
+  try {
+    const value = CacheService.getScriptCache().get(CONFIG.cache.bootstrapKey);
+    return value ? JSON.parse(value) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeCachedBootstrapData_(data) {
+  try {
+    const value = JSON.stringify(data);
+    if (value.length > CONFIG.cache.maxValueLength) return;
+    CacheService.getScriptCache().put(CONFIG.cache.bootstrapKey, value, CONFIG.cache.ttlSeconds);
+  } catch (error) {
+    // Кэш — только ускоритель. Если он недоступен или данные слишком большие,
+    // следующий запрос просто прочитает справочники из таблицы как раньше.
+  }
 }
 
 function submitOrder(payload) {
