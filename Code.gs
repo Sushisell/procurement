@@ -173,11 +173,7 @@ function submitOrder(payload) {
 
   if (!branch) throw new Error('Не найден филиал: ' + payload.branch);
 
-  const branchSpreadsheet = branch.url ? SpreadsheetApp.openByUrl(branch.url) : master;
-  const existingDraft = findOrders_(branchSpreadsheet, payload.date).find((order) =>
-    normalizeKey_(order.supplier) === normalizeKey_(payload.supplier)
-      && order.status === 'submitted');
-  if (existingDraft) {
+  if (hasRequestJournalDraft_(master, payload)) {
     throw new Error('На эту дату уже есть черновик заявки поставщику. Откройте вкладку «Корректировка».');
   }
 
@@ -194,7 +190,6 @@ function submitOrder(payload) {
     requestRows.push(buildRequestJournalRow_(payload, item.product, quantity, lineTotal, 'Черновик'));
   });
 
-  saveSubmittedOrderToBranch_(branchSpreadsheet, master, payload);
   appendRequestJournalRows_(master, requestRows);
 
   const correctionUntil = availability && availability.rule
@@ -209,22 +204,6 @@ function submitOrder(payload) {
     sheetName: CONFIG.sheets.requests,
     correctionUntil,
   };
-}
-
-function saveSubmittedOrderToBranch_(branchSpreadsheet, master, payload) {
-  const date = parseDate_(payload.date);
-  const sheet = getOrCreateMonthSheet_(branchSpreadsheet, master, date);
-  syncBranchSheetWithTemplate_(sheet, readTemplateProducts_(master.getSheetByName(CONFIG.sheets.template), getKnownSuppliers_(master)));
-  const column = ensureSubmissionColumn_(sheet, date);
-  const rowByProduct = buildProductRowIndex_(sheet);
-  sheet.getRange(CONFIG.branchSheet.initiatorRow, column).setValue(payload.employee);
-  payload.items.forEach((item) => {
-    const row = rowByProduct[normalizeKey_(item.product)];
-    if (row) sheet.getRange(row, column).setValue(toNumber_(item.quantity)).setBackground(CONFIG.branchSheet.notReceivedColor).setNote('Получение не отмечено.');
-  });
-  const supplierRow = findSupplierRow_(sheet, payload.supplier);
-  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
-  sheet.getRange(supplierRow, column).setNote('Статус: отправлено.');
 }
 
 function getLatestOrder(payload) {
@@ -426,6 +405,18 @@ function appendRequestJournalRows_(spreadsheet, rows) {
   const firstRow = sheet.getLastRow() + 1;
   sheet.getRange(firstRow, 1, rows.length, CONFIG.requestSheet.columnsCount).setValues(rows);
   applyRequestStatusValidation_(sheet, firstRow, rows.length);
+}
+
+function hasRequestJournalDraft_(spreadsheet, payload) {
+  const sheet = getRequestJournalSheet_(spreadsheet, payload.date);
+  const values = sheet.getDataRange().getDisplayValues();
+  const deliveryDate = normalizeKey_(formatRussianDate_(payload.date));
+  const supplier = normalizeKey_(payload.supplier);
+  const branch = normalizeKey_(payload.branch);
+  return values.slice(1).some((row) => normalizeKey_(row[1]) === deliveryDate
+    && normalizeKey_(row[2]) === supplier
+    && normalizeKey_(row[6]) === branch
+    && normalizeKey_(row[8]) === normalizeKey_('Черновик'));
 }
 
 function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
