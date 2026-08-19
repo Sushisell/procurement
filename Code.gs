@@ -173,93 +173,27 @@ function submitOrder(payload) {
 
   if (!branch) throw new Error('Не найден филиал: ' + payload.branch);
 
-  const date = parseDate_(payload.date);
-  const branchSpreadsheet = branch.url ? SpreadsheetApp.openByUrl(branch.url) : master;
-  const monthSheet = getOrCreateMonthSheet_(branchSpreadsheet, master, date);
-  const templateProducts = readTemplateProducts_(master.getSheetByName(CONFIG.sheets.template), getKnownSuppliers_(master));
-
-  syncBranchSheetWithTemplate_(monthSheet, templateProducts);
-
-  const dateColumn = ensureSubmissionColumn_(monthSheet, date);
-  const supplierRow = findSupplierRow_(monthSheet, payload.supplier);
-  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
-  const existingOrder = readOrdersFromColumn_(monthSheet, dateColumn)
-    .find((order) => normalizeKey_(order.supplier) === normalizeKey_(payload.supplier));
-  if (existingOrder && isOrderDeadlinePassed_(master, existingOrder)) {
-    throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
-  }
-  if (existingOrder && isOrderLocked_(master, existingOrder, payload.branch)) {
-    throw new Error('Заказанную заявку уже нельзя корректировать.');
-  }
-
-  const previousQuantityByProduct = {};
-  if (existingOrder) {
-    existingOrder.items.forEach((item) => {
-      previousQuantityByProduct[normalizeKey_(item.product)] = item.quantity;
-    });
-  }
-
-  const rowByProduct = buildProductRowIndex_(monthSheet);
-  // Повторная отправка поставщику является редактированием его части заявки:
-  // удаляем старые количества этого поставщика, не затрагивая остальных.
-  getSupplierProductRows_(monthSheet, payload.supplier).forEach((row) => {
-    monthSheet.getRange(row, dateColumn).clearContent().clearNote().setBackground(null);
-  });
   let total = 0;
-  const warnings = [];
-
   const requestRows = [];
-  const submittedProducts = {};
 
   payload.items.forEach((item) => {
     const quantity = toNumber_(item.quantity);
     if (!quantity) return;
 
-    const productKey = normalizeKey_(item.product);
-    submittedProducts[productKey] = true;
-    const row = rowByProduct[productKey];
     const price = toNumber_(item.price);
     const lineTotal = quantity * price;
     total += lineTotal;
-
-    if (!row) {
-      warnings.push('Товар не найден в таблице филиала и не был записан: ' + item.product);
-      return;
-    }
-
-    const previousQuantity = previousQuantityByProduct[productKey] || 0;
-    const journalQuantity = existingOrder ? quantity - previousQuantity : quantity;
-    if (journalQuantity) {
-      requestRows.push(buildRequestJournalRow_(payload, item.product, journalQuantity, journalQuantity > 0 ? journalQuantity * price : '', journalQuantity < 0 ? 'Корректировка' : 'Черновик'));
-    }
-
-    monthSheet.getRange(row, dateColumn)
-      .setValue(quantity)
-      .setBackground(CONFIG.branchSheet.notReceivedColor)
-      .setNote('Получение не отмечено.');
+    requestRows.push(buildRequestJournalRow_(payload, item.product, quantity, lineTotal, 'Черновик'));
   });
 
-  Object.keys(previousQuantityByProduct).forEach((productKey) => {
-    if (submittedProducts[productKey]) return;
-    const previousItem = existingOrder.items.find((item) => normalizeKey_(item.product) === productKey);
-    if (previousItem) {
-      requestRows.push(buildRequestJournalRow_(payload, previousItem.product, -previousItem.quantity, '', 'Корректировка'));
-    }
-  });
-
-  monthSheet.getRange(CONFIG.branchSheet.initiatorRow, dateColumn).setValue(payload.employee);
-  monthSheet.getRange(CONFIG.branchSheet.totalRow, dateColumn).clearContent();
-  monthSheet.getRange(supplierRow, dateColumn)
-    .clearContent()
-    .setNote('Статус: отправлено.');
   appendRequestJournalRows_(master, requestRows);
 
   return {
     ok: true,
     total,
-    warnings,
-    spreadsheetUrl: branch.url || master.getUrl(),
-    sheetName: monthSheet.getName(),
+    warnings: [],
+    spreadsheetUrl: master.getUrl(),
+    sheetName: CONFIG.sheets.requests,
   };
 }
 
