@@ -233,16 +233,18 @@ function getOrders(payload) {
 function readRequestJournalOrders_(spreadsheet, branch, deliveryDate) {
   if (!branch) return [];
   const sheet = getRequestJournalSheet_(spreadsheet, deliveryDate || Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'));
-  const values = sheet.getDataRange().getDisplayValues();
+  const dataRange = sheet.getDataRange();
+  const values = dataRange.getDisplayValues();
+  const notes = dataRange.getNotes();
   const groups = {};
-  values.slice(1).forEach((row) => {
+  values.slice(1).forEach((row, index) => {
     const date = clean_(row[1]);
     const supplier = clean_(row[2]);
     if (!date || !supplier || normalizeKey_(row[6]) !== normalizeKey_(branch)) return;
     if (deliveryDate && normalizeKey_(date) !== normalizeKey_(formatRussianDate_(deliveryDate))) return;
     const groupKey = normalizeKey_(date + '|' + supplier);
     if (!groups[groupKey]) groups[groupKey] = { date, supplier, initiator: clean_(row[7]), rows: [] };
-    groups[groupKey].rows.push(row);
+    groups[groupKey].rows.push({ values: row, receiptNote: notes[index + 1][4] });
   });
 
   return Object.keys(groups).map((groupKey) => {
@@ -250,12 +252,16 @@ function readRequestJournalOrders_(spreadsheet, branch, deliveryDate) {
     const quantities = {};
     const productNames = {};
     const statuses = {};
-    group.rows.forEach((row) => {
+    const receiptByProduct = {};
+    group.rows.forEach((journalRow) => {
+      const row = journalRow.values;
       const productKey = normalizeKey_(row[3]);
       if (!productKey) return;
       productNames[productKey] = clean_(row[3]);
       quantities[productKey] = (quantities[productKey] || 0) + toNumber_(row[4]);
       statuses[normalizeKey_(row[8])] = true;
+      const parsedReceipt = parseReceiptNote_(journalRow.receiptNote);
+      if (parsedReceipt.events.length) receiptByProduct[productKey] = parsedReceipt;
     });
     const items = Object.keys(quantities).filter((key) => quantities[key] > 0).map((key) => ({
       product: productNames[key],
@@ -263,9 +269,15 @@ function readRequestJournalOrders_(spreadsheet, branch, deliveryDate) {
       unit: '',
     }));
     let status = 'submitted';
-    if (statuses[normalizeKey_('Получено')] || statuses[normalizeKey_('Получено не все')]) status = 'received';
-    else if (statuses[normalizeKey_('Заказано')]) status = 'ordered';
+    if (statuses[normalizeKey_('Получено')]) status = 'received';
+    else if (statuses[normalizeKey_('Заказано')] || statuses[normalizeKey_('Получено не все')]) status = 'ordered';
     const dateParts = group.date.split('.');
+    const receiptItems = Object.keys(receiptByProduct).map((key) => ({
+      orderedProduct: productNames[key],
+      actualProduct: receiptByProduct[key].actualProduct || productNames[key],
+      actualQuantity: receiptByProduct[key].total,
+      remainingQuantity: Math.max(0, (quantities[key] || 0) - receiptByProduct[key].total),
+    }));
     return {
       id: 'journal:' + encodeURIComponent(group.date) + ':' + encodeURIComponent(group.supplier),
       storage: 'journal',
@@ -274,6 +286,7 @@ function readRequestJournalOrders_(spreadsheet, branch, deliveryDate) {
       initiator: group.initiator,
       items,
       status,
+      receipt: receiptItems.length ? { items: receiptItems } : null,
     };
   }).filter((order) => order.items.length).sort((a, b) => b.date.localeCompare(a.date));
 }
@@ -348,10 +361,14 @@ function receiveOrder(payload) {
     throw new Error('Сотрудник не найден в выбранном филиале.');
   }
 
-  const order = findOrderById_(context.spreadsheet, payload.orderId);
+  const journalId = parseJournalOrderId_(payload.orderId);
+  const order = journalId
+    ? readRequestJournalOrders_(context.master, payload.branch, russianDateToIso_(journalId.date))
+      .find((item) => normalizeKey_(item.supplier) === normalizeKey_(journalId.supplier))
+    : findOrderById_(context.spreadsheet, payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена. Обновите данные.');
   if (order.status !== 'ordered') throw new Error('Сначала отметьте, что заявка заказана.');
-  order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
+  if (!journalId) order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
 
   const expected = {};
   order.items.forEach((item) => { expected[normalizeKey_(item.product)] = item; });
@@ -363,12 +380,48 @@ function receiveOrder(payload) {
     const actualQuantity = toNumber_(item.actualQuantity);
     if (!actualProduct && actualQuantity) throw new Error('Укажите фактически приехавший товар.');
     if (actualQuantity < 0) throw new Error('Фактическое количество не может быть отрицательным.');
+    const savedItem = (order.receipt && order.receipt.items || [])
+      .find((receiptItem) => normalizeKey_(receiptItem.orderedProduct) === normalizeKey_(orderedProduct));
+    const remaining = Math.max(0, ordered.quantity - toNumber_(savedItem && savedItem.actualQuantity));
+    if (actualQuantity > remaining) throw new Error('Полученное количество превышает остаток по товару: ' + orderedProduct);
   });
 
-  applyReceiptFormatting_(context.spreadsheet, order, payload.items, payload.employee, new Date());
+  if (journalId) applyJournalReceipt_(context.master, order, payload.branch, payload.items, payload.employee, new Date());
+  else applyReceiptFormatting_(context.spreadsheet, order, payload.items, payload.employee, new Date());
   updateRequestJournalReceiptStatuses_(context.master, order, payload.branch, payload.items);
 
   return { ok: true, orderId: order.id, receivedAt: Utilities.formatDate(new Date(), CONFIG.timeZone, "yyyy-MM-dd'T'HH:mm:ss") };
+}
+
+function applyJournalReceipt_(spreadsheet, order, branch, receivedItems, employee, receivedAt) {
+  const sheet = getRequestJournalSheet_(spreadsheet, order.date);
+  const values = sheet.getDataRange().getDisplayValues();
+  const receivedByProduct = {};
+  receivedItems.forEach((item) => { receivedByProduct[normalizeKey_(item.orderedProduct)] = item; });
+  const handledProducts = {};
+  const dateText = Utilities.formatDate(receivedAt, CONFIG.timeZone, 'dd.MM.yyyy');
+
+  values.slice(1).forEach((row, index) => {
+    const productKey = normalizeKey_(row[3]);
+    if (normalizeKey_(row[1]) !== normalizeKey_(formatRussianDate_(order.date))
+      || normalizeKey_(row[2]) !== normalizeKey_(order.supplier)
+      || normalizeKey_(row[6]) !== normalizeKey_(branch)
+      || !receivedByProduct[productKey]
+      || handledProducts[productKey]) return;
+    handledProducts[productKey] = true;
+    const received = receivedByProduct[productKey];
+    const addedQuantity = toNumber_(received.actualQuantity);
+    if (!addedQuantity) return;
+    const range = sheet.getRange(index + 2, 5);
+    const previous = parseReceiptNote_(range.getNote());
+    const event = 'Получено ' + formatReceiptQuantity_(addedQuantity, '')
+      + ' от ' + dateText + ' сотрудником ' + employee;
+    const lines = previous.events.map((item) => item.text).concat(event);
+    const actualProduct = clean_(received.actualProduct) || clean_(row[3]);
+    if (normalizeKey_(actualProduct) !== productKey) lines.push('Фактически приехал товар: ' + actualProduct + '.');
+    else if (previous.actualProduct) lines.push('Фактически приехал товар: ' + previous.actualProduct + '.');
+    range.setNote(lines.join('\n'));
+  });
 }
 
 function updateSubmittedOrder(payload) {
