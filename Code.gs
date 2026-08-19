@@ -173,6 +173,14 @@ function submitOrder(payload) {
 
   if (!branch) throw new Error('Не найден филиал: ' + payload.branch);
 
+  const branchSpreadsheet = branch.url ? SpreadsheetApp.openByUrl(branch.url) : master;
+  const existingDraft = findOrders_(branchSpreadsheet, payload.date).find((order) =>
+    normalizeKey_(order.supplier) === normalizeKey_(payload.supplier)
+      && order.status === 'submitted');
+  if (existingDraft) {
+    throw new Error('На эту дату уже есть черновик заявки поставщику. Откройте вкладку «Корректировка».');
+  }
+
   let total = 0;
   const requestRows = [];
 
@@ -186,7 +194,12 @@ function submitOrder(payload) {
     requestRows.push(buildRequestJournalRow_(payload, item.product, quantity, lineTotal, 'Черновик'));
   });
 
+  saveSubmittedOrderToBranch_(branchSpreadsheet, master, payload);
   appendRequestJournalRows_(master, requestRows);
+
+  const correctionUntil = availability && availability.rule
+    ? formatRussianDate_(availability.orderDate) + ' до ' + availability.rule.cutoffTime + ' (Красноярск)'
+    : (supplier.cutoffTime ? 'до ' + supplier.cutoffTime + ' по Красноярску' : 'до окончания приёма заявок поставщиком');
 
   return {
     ok: true,
@@ -194,7 +207,24 @@ function submitOrder(payload) {
     warnings: [],
     spreadsheetUrl: master.getUrl(),
     sheetName: CONFIG.sheets.requests,
+    correctionUntil,
   };
+}
+
+function saveSubmittedOrderToBranch_(branchSpreadsheet, master, payload) {
+  const date = parseDate_(payload.date);
+  const sheet = getOrCreateMonthSheet_(branchSpreadsheet, master, date);
+  syncBranchSheetWithTemplate_(sheet, readTemplateProducts_(master.getSheetByName(CONFIG.sheets.template), getKnownSuppliers_(master)));
+  const column = ensureSubmissionColumn_(sheet, date);
+  const rowByProduct = buildProductRowIndex_(sheet);
+  sheet.getRange(CONFIG.branchSheet.initiatorRow, column).setValue(payload.employee);
+  payload.items.forEach((item) => {
+    const row = rowByProduct[normalizeKey_(item.product)];
+    if (row) sheet.getRange(row, column).setValue(toNumber_(item.quantity)).setBackground(CONFIG.branchSheet.notReceivedColor).setNote('Получение не отмечено.');
+  });
+  const supplierRow = findSupplierRow_(sheet, payload.supplier);
+  if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
+  sheet.getRange(supplierRow, column).setNote('Статус: отправлено.');
 }
 
 function getLatestOrder(payload) {
@@ -210,6 +240,10 @@ function getOrders(payload) {
     order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
     if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
   });
+  const view = clean_(payload && payload.view).toLowerCase();
+  if (view === 'correction') return orders.filter((order) => order.status === 'submitted');
+  if (view === 'receipt') return orders.filter((order) => order.status === 'ordered');
+  if (view === 'archive') return orders.filter((order) => order.status === 'received');
   return orders;
 }
 
@@ -252,7 +286,9 @@ function applyRequestJournalStatuses_(spreadsheet, orders, branch) {
   if (!orders.length) return;
 
   orders.forEach((order) => {
-    if (isOrderLocked_(spreadsheet, order, branch)) order.status = 'ordered';
+    const statuses = readRequestJournalOrderStatuses_(spreadsheet, order, branch);
+    if (statuses[normalizeKey_('Получено')]) order.status = 'received';
+    else if (statuses[normalizeKey_('Заказано')] || statuses[normalizeKey_('Получено не все')]) order.status = 'ordered';
     if (order.status !== 'ordered' && isOrderDeadlinePassed_(spreadsheet, order)) {
       order.editable = false;
       order.lockReason = 'deadline';
@@ -279,6 +315,7 @@ function receiveOrder(payload) {
   const order = findOrderById_(context.spreadsheet, payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена. Обновите данные.');
   if (order.status !== 'ordered') throw new Error('Сначала отметьте, что заявка заказана.');
+  order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
 
   const expected = {};
   order.items.forEach((item) => { expected[normalizeKey_(item.product)] = item; });
@@ -457,7 +494,13 @@ function updateRequestJournalStatus_(spreadsheet, order, branch, status, fromSta
 
 function updateRequestJournalReceiptStatuses_(spreadsheet, order, branch, receivedItems) {
   const receivedByProduct = {};
-  receivedItems.forEach((item) => { receivedByProduct[normalizeKey_(item.orderedProduct)] = toNumber_(item.actualQuantity); });
+  (order.receipt && order.receipt.items || []).forEach((item) => {
+    receivedByProduct[normalizeKey_(item.orderedProduct)] = toNumber_(item.actualQuantity);
+  });
+  receivedItems.forEach((item) => {
+    const key = normalizeKey_(item.orderedProduct);
+    receivedByProduct[key] = (receivedByProduct[key] || 0) + toNumber_(item.actualQuantity);
+  });
   const allReceived = order.items.every((item) => (receivedByProduct[normalizeKey_(item.product)] || 0) >= item.quantity);
   updateRequestJournalStatus_(spreadsheet, order, branch, allReceived ? 'Получено' : 'Получено не все', ['Заказано', 'Получено не все']);
 }

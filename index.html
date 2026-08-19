@@ -369,8 +369,8 @@
     .setup-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .setup-grid select { min-width: 0; padding-left: 7px; padding-right: 4px; font-size: 14px; }
     .setup-field label { font-size: 10px; }
-    .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 4px 0 10px; padding: 4px; border-radius: 14px; background: #e4e7ec; }
-    .mode-button { min-height: 42px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); font: inherit; font-weight: 850; }
+    .mode-switch { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 10px; padding: 4px; border-radius: 14px; background: #e4e7ec; }
+    .mode-button { min-width: 0; min-height: 42px; padding: 6px 3px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 850; overflow-wrap: anywhere; }
     .mode-button.active { background: #fff; color: var(--primary-dark); box-shadow: 0 2px 8px rgba(16, 24, 40, .12); }
     .receipt-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
     .receipt-title { margin: 0; font-size: 19px; }
@@ -389,6 +389,11 @@
     .edit-stepper { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; max-width: 180px; }
     .edit-stepper button { height: 40px; border: 1px solid var(--border); background: #fff; color: var(--primary-dark); font-size: 22px; }
     .edit-stepper output { text-align: center; font-weight: 850; }
+    .draft-notice { margin: 10px 0; padding: 14px; border: 1px solid #84adff; border-radius: 14px; background: #eef4ff; color: #1849a9; font-weight: 800; }
+    .draft-notice button { margin-top: 10px; width: 100%; }
+    .success-screen { padding: 28px 18px; text-align: center; }
+    .success-screen h2 { margin: 0 0 10px; color: var(--success); }
+    .archive-items { margin-top: 10px; color: var(--muted); }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
       .product-row { grid-template-columns: minmax(0, 1fr) 52px 92px; gap: 4px; }
@@ -397,7 +402,7 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.7.0</div>
+  <div id="appVersion" class="version-badge">v0.8.0</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -406,7 +411,9 @@
 
     <nav class="mode-switch" aria-label="Раздел">
       <button id="orderMode" class="mode-button active" type="button">Новая заявка</button>
+      <button id="correctionMode" class="mode-button" type="button">Корректировка</button>
       <button id="receiptMode" class="mode-button" type="button">Приёмка</button>
+      <button id="archiveMode" class="mode-button" type="button">Архив</button>
     </nav>
 
     <section id="setup" class="card">
@@ -442,6 +449,7 @@
     <section id="receipt" class="hidden">
       <div id="receiptPanel" class="card"><div class="empty">Выберите филиал, чтобы загрузить последнюю заявку.</div></div>
     </section>
+    <section id="success" class="hidden"></section>
   </main>
 
   <footer class="bottom-bar">
@@ -456,7 +464,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.7.0';
+    const APP_VERSION = 'v0.8.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -471,6 +479,7 @@
       latestOrder: null,
       receiptOrders: [],
       loadingReceipt: false,
+      draftOrders: [],
     };
 
     const el = (id) => document.getElementById(id);
@@ -501,18 +510,20 @@
     function bindEvents() {
       el('branch').addEventListener('change', () => {
         renderEmployees();
-        if (state.mode === 'receipt') loadLatestOrder();
+        if (state.mode === 'order') loadDrafts();
+        else loadLatestOrder();
         updateSubmitState();
       });
       el('employee').addEventListener('change', updateSubmitState);
       el('date').addEventListener('change', () => {
-        if (state.mode === 'receipt') {
+        if (state.mode !== 'order') {
           loadLatestOrder();
           return;
         }
         renderSupplierOptions();
         renderSupplier();
         updateTotals();
+        loadDrafts();
       });
       el('supplier').addEventListener('change', () => {
         state.activeSupplier = el('supplier').value;
@@ -525,7 +536,9 @@
       window.addEventListener('orientationchange', updateStickyHeaderOffset);
       el('submit').addEventListener('click', submitOrder);
       el('orderMode').addEventListener('click', () => setMode('order'));
+      el('correctionMode').addEventListener('click', () => setMode('correction'));
       el('receiptMode').addEventListener('click', () => setMode('receipt'));
+      el('archiveMode').addEventListener('click', () => setMode('archive'));
     }
 
     function renderBranches() {
@@ -573,6 +586,7 @@
       const missing = Math.max(0, minimum - progress.current);
       const minimumLabel = formatMinimum(info);
       const unavailable = isSelectedDateUnavailable(info);
+      const existingDraft = state.draftOrders.find((order) => order.supplier === group.supplier);
       const cutoffText = info.deliveryRules?.length
         ? ''
         : (info.cutoffTime
@@ -589,9 +603,10 @@
           ${missing && !unavailable ? `<div class="meta" style="color:var(--danger)">До минималки не хватает ${escapeHtml(formatMinimumValue(missing, info))}</div>` : ''}
           <div id="conditionsText" class="meta hidden">${escapeHtml(info.orderInfo || 'Условия не указаны')} ${info.contact ? `<br>${linkPhones(info.contact)}` : ''}</div>
         </div>
-        ${unavailable ? renderUnavailableNotice(info) : renderProductTable(group.supplier, products, info, supplierTotal)}
+        ${existingDraft ? `<div class="draft-notice">Уже есть черновик заявки на эту дату.<button id="openCorrection" class="secondary-action" type="button">Перейти во вкладку «Корректировка»</button></div>` : (unavailable ? renderUnavailableNotice(info) : renderProductTable(group.supplier, products, info, supplierTotal))}
       `;
       el('conditionsButton').addEventListener('click', () => el('conditionsText').classList.toggle('hidden'));
+      el('openCorrection')?.addEventListener('click', () => setMode('correction'));
 
       el('supplierPanel').querySelectorAll('[data-step]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -651,7 +666,13 @@
       runServer('submitOrder', payload)
         .then((result) => {
           state.submitting = false;
-          el('status').textContent = `Готово. Сумма: ${money(result.total)}${result.warnings?.length ? ' · Есть предупреждения' : ''}`;
+          state.quantities = {};
+          el('success').innerHTML = `<div class="card success-screen"><h2>Спасибо за заявку!</h2><p>Заявка сохранена как черновик.</p><p>Корректировка доступна во вкладке «Корректировка» <strong>${escapeHtml(result.correctionUntil || 'до окончания приёма заявок поставщиком')}</strong>.</p><button id="successCorrection" class="secondary-action" type="button">Перейти к корректировке</button></div>`;
+          el('successCorrection').addEventListener('click', () => setMode('correction'));
+          el('order').classList.add('hidden');
+          el('success').classList.remove('hidden');
+          el('status').textContent = `Сумма заявки: ${money(result.total)}`;
+          loadDrafts(false);
           updateSubmitState();
         })
         .catch((error) => {
@@ -664,23 +685,34 @@
     function setMode(mode) {
       state.mode = mode;
       const receiving = mode === 'receipt';
-      el('orderMode').classList.toggle('active', !receiving);
+      const ordering = mode === 'order';
+      const archive = mode === 'archive';
+      el('orderMode').classList.toggle('active', ordering);
+      el('correctionMode').classList.toggle('active', mode === 'correction');
       el('receiptMode').classList.toggle('active', receiving);
-      el('order').classList.toggle('hidden', receiving);
-      el('receipt').classList.toggle('hidden', !receiving);
+      el('archiveMode').classList.toggle('active', archive);
+      el('order').classList.toggle('hidden', !ordering);
+      el('receipt').classList.toggle('hidden', ordering);
+      el('success').classList.add('hidden');
       el('date').closest('.setup-field').classList.remove('hidden');
-      el('supplier').closest('.setup-field').classList.toggle('hidden', receiving);
-      el('date').min = receiving ? '' : state.data.today;
+      el('supplier').closest('.setup-field').classList.toggle('hidden', !ordering);
+      el('date').min = ordering ? state.data.today : '';
       el('date').closest('.setup-field').querySelector('label').textContent = receiving
         ? 'День получения'
         : 'Дата поставки (Красноярск)';
-      el('subtitle').textContent = receiving
-        ? 'Выберите филиал и своё ФИО, затем отметьте фактическую поставку.'
-        : 'Выберите филиал, ФИО, дату и поставщика.';
-      el('footerLabel').textContent = receiving ? 'Выбранная заявка' : 'Общая сумма';
-      if (receiving) loadLatestOrder();
-      else updateTotals();
+      el('subtitle').textContent = ordering ? 'Выберите филиал, ФИО, дату и поставщика.'
+        : receiving ? 'Здесь доступны только заявки со статусом «Заказано».'
+          : archive ? 'Полученные заявки филиала.' : 'Изменяйте отправленные черновики до срока поставщика.';
+      el('footerLabel').textContent = ordering ? 'Общая сумма' : 'Выбранная заявка';
+      if (ordering) { renderSupplier(); updateTotals(); loadDrafts(); } else loadLatestOrder();
       updateSubmitState();
+    }
+
+    function loadDrafts(render = true) {
+      if (!el('branch').value || !el('date').value) { state.draftOrders = []; if (render) renderSupplier(); return; }
+      runServer('getOrders', { branch: el('branch').value, date: el('date').value, view: 'correction' })
+        .then((orders) => { state.draftOrders = orders || []; if (render && state.mode === 'order') { renderSupplier(); updateSubmitState(); } })
+        .catch((error) => { el('status').textContent = error.message || String(error); });
     }
 
     function loadLatestOrder() {
@@ -694,7 +726,7 @@
       }
       state.loadingReceipt = true;
       el('receiptPanel').innerHTML = '<div class="empty">Загружаю последнюю заявку…</div>';
-      runServer('getOrders', { branch, date: el('date').value })
+      runServer('getOrders', { branch, date: el('date').value, view: state.mode })
         .then((orders) => {
           state.loadingReceipt = false;
           state.receiptOrders = orders || [];
@@ -717,7 +749,8 @@
         return;
       }
       if (!order) {
-        el('receiptPanel').innerHTML = '<div class="empty">У филиала пока нет отправленных заявок.</div>';
+        const emptyText = state.mode === 'correction' ? 'Нет черновиков для корректировки.' : state.mode === 'archive' ? 'В архиве пока нет полученных заявок.' : 'Нет заказанных заявок для приёмки.';
+        el('receiptPanel').innerHTML = `<div class="empty">${emptyText}</div>`;
         el('grandTotal').textContent = 'Нет заявок';
         return;
       }
@@ -734,7 +767,7 @@
           <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
           <button id="refreshReceipt" class="refresh-button" type="button">Обновить</button>
         </div>
-        <div class="received-note">Статус: ${order.status === 'ordered'
+        <div class="received-note">Статус: ${order.status === 'received' ? 'получено — заявка находится в архиве' : order.status === 'ordered'
           ? 'заказано — отмечайте поступления'
           : order.editable === false
             ? 'отправлено — время изменения заявки прошло'
@@ -744,12 +777,13 @@
           return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
         }).map((item, index) => {
           const saved = receiptItems[item.product] || {};
-          if (order.status !== 'ordered') return `<div class="receipt-row">
+          if (order.status === 'submitted') return `<div class="receipt-row">
             <div class="receipt-ordered">${escapeHtml(item.product)}</div>
             <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}">
               <button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output>${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button>
             </div>
           </div>`;
+          if (order.status === 'received') return `<div class="receipt-row"><div class="receipt-ordered">${escapeHtml(item.product)} — ${item.quantity} ${escapeHtml(item.unit || '')}</div><div class="archive-items">Получено полностью</div></div>`;
           const remaining = Math.max(0, item.quantity - (saved.actualQuantity || 0));
           return `<div class="receipt-row">
             <div class="receipt-ordered">${escapeHtml(item.product)} — осталось ${remaining} ${escapeHtml(item.unit || '')}</div>
@@ -888,7 +922,12 @@
     }
 
     function updateSubmitState() {
-      if (state.mode === 'receipt') {
+      if (state.mode !== 'order') {
+        if (state.mode === 'archive' || state.mode === 'correction') {
+          el('submit').disabled = true;
+          el('submit').textContent = state.mode === 'archive' ? 'Архив' : 'Сохраните изменения выше';
+          return;
+        }
         if (state.latestOrder?.status === 'submitted') {
           el('submit').disabled = true;
           el('submit').textContent = state.latestOrder.editable === false ? 'Время заявки прошло' : 'Сначала отметьте «заказана»';
@@ -906,7 +945,8 @@
       const currentItems = collectItems().filter((item) => item.supplier === state.activeSupplier);
       const progress = getMinimumProgress(group, info);
       const meetsMinimum = !progress.minimum || !progress.missing;
-      el('submit').disabled = state.submitting || !el('branch').value || !el('employee').value || !el('date').value || isSelectedDateUnavailable(info) || !currentItems.length || !meetsMinimum;
+      const hasDraft = state.draftOrders.some((order) => order.supplier === state.activeSupplier);
+      el('submit').disabled = state.submitting || hasDraft || !el('branch').value || !el('employee').value || !el('date').value || isSelectedDateUnavailable(info) || !currentItems.length || !meetsMinimum;
       el('submit').textContent = state.submitting ? 'Отправка…' : 'Отправить';
     }
 
