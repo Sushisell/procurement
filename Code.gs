@@ -213,9 +213,13 @@ function getLatestOrder(payload) {
 
 function getOrders(payload) {
   const context = getBranchContext_(payload && payload.branch);
-  const orders = findOrders_(context.spreadsheet, payload && payload.date);
+  const journalOrders = readRequestJournalOrders_(context.master, payload && payload.branch, payload && payload.date);
+  const orders = journalOrders.length
+    ? journalOrders
+    : findOrders_(context.spreadsheet, payload && payload.date);
   applyRequestJournalStatuses_(context.master, orders, payload && payload.branch);
   orders.forEach((order) => {
+    if (order.storage === 'journal') return;
     order.receipt = readReceiptFromOrderCells_(context.spreadsheet, order);
     if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
   });
@@ -224,6 +228,59 @@ function getOrders(payload) {
   if (view === 'receipt') return orders.filter((order) => order.status === 'ordered');
   if (view === 'archive') return orders.filter((order) => order.status === 'received');
   return orders;
+}
+
+function readRequestJournalOrders_(spreadsheet, branch, deliveryDate) {
+  if (!branch) return [];
+  const sheet = getRequestJournalSheet_(spreadsheet, deliveryDate || Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'));
+  const values = sheet.getDataRange().getDisplayValues();
+  const groups = {};
+  values.slice(1).forEach((row) => {
+    const date = clean_(row[1]);
+    const supplier = clean_(row[2]);
+    if (!date || !supplier || normalizeKey_(row[6]) !== normalizeKey_(branch)) return;
+    if (deliveryDate && normalizeKey_(date) !== normalizeKey_(formatRussianDate_(deliveryDate))) return;
+    const groupKey = normalizeKey_(date + '|' + supplier);
+    if (!groups[groupKey]) groups[groupKey] = { date, supplier, initiator: clean_(row[7]), rows: [] };
+    groups[groupKey].rows.push(row);
+  });
+
+  return Object.keys(groups).map((groupKey) => {
+    const group = groups[groupKey];
+    const quantities = {};
+    const productNames = {};
+    const statuses = {};
+    group.rows.forEach((row) => {
+      const productKey = normalizeKey_(row[3]);
+      if (!productKey) return;
+      productNames[productKey] = clean_(row[3]);
+      quantities[productKey] = (quantities[productKey] || 0) + toNumber_(row[4]);
+      statuses[normalizeKey_(row[8])] = true;
+    });
+    const items = Object.keys(quantities).filter((key) => quantities[key] > 0).map((key) => ({
+      product: productNames[key],
+      quantity: quantities[key],
+      unit: '',
+    }));
+    let status = 'submitted';
+    if (statuses[normalizeKey_('Получено')] || statuses[normalizeKey_('Получено не все')]) status = 'received';
+    else if (statuses[normalizeKey_('Заказано')]) status = 'ordered';
+    const dateParts = group.date.split('.');
+    return {
+      id: 'journal:' + encodeURIComponent(group.date) + ':' + encodeURIComponent(group.supplier),
+      storage: 'journal',
+      date: [dateParts[2], dateParts[1], dateParts[0]].join('-'),
+      supplier: group.supplier,
+      initiator: group.initiator,
+      items,
+      status,
+    };
+  }).filter((order) => order.items.length).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function parseJournalOrderId_(orderId) {
+  const match = clean_(orderId).match(/^journal:([^:]+):(.+)$/);
+  return match ? { date: decodeURIComponent(match[1]), supplier: decodeURIComponent(match[2]) } : null;
 }
 
 
@@ -316,6 +373,8 @@ function receiveOrder(payload) {
 
 function updateSubmittedOrder(payload) {
   const context = getBranchContext_(payload && payload.branch);
+  const journalId = parseJournalOrderId_(payload && payload.orderId);
+  if (journalId) return updateJournalOrder_(context.master, payload, journalId);
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
   if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
@@ -358,8 +417,43 @@ function updateSubmittedOrder(payload) {
   return findOrderById_(context.spreadsheet, order.id);
 }
 
+function updateJournalOrder_(spreadsheet, payload, journalId) {
+  const orders = readRequestJournalOrders_(spreadsheet, payload.branch, russianDateToIso_(journalId.date));
+  const order = orders.find((item) => normalizeKey_(item.supplier) === normalizeKey_(journalId.supplier));
+  if (!order) throw new Error('Заявка больше не найдена.');
+  if (isOrderDeadlinePassed_(spreadsheet, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
+  if (order.status !== 'submitted') throw new Error('Заказанную заявку уже нельзя корректировать.');
+  if (!Array.isArray(payload.items) || !payload.items.some((item) => toNumber_(item.quantity) > 0)) {
+    throw new Error('В заявке должна остаться хотя бы одна позиция.');
+  }
+  const original = {};
+  order.items.forEach((item) => { original[normalizeKey_(item.product)] = item; });
+  const rows = [];
+  payload.items.forEach((item) => {
+    const oldItem = original[normalizeKey_(item.product)];
+    if (!oldItem) throw new Error('Нельзя добавить товар из другой заявки.');
+    const delta = Math.max(0, toNumber_(item.quantity)) - oldItem.quantity;
+    if (delta) rows.push(buildRequestJournalRow_({
+      date: order.date, supplier: order.supplier, branch: payload.branch, employee: order.initiator,
+    }, oldItem.product, delta, 0, 'Корректировка'));
+  });
+  appendRequestJournalRows_(spreadsheet, rows);
+  return readRequestJournalOrders_(spreadsheet, payload.branch, order.date)
+    .find((item) => normalizeKey_(item.supplier) === normalizeKey_(order.supplier));
+}
+
 function markOrderOrdered(payload) {
   const context = getBranchContext_(payload && payload.branch);
+  const journalId = parseJournalOrderId_(payload && payload.orderId);
+  if (journalId) {
+    const orders = readRequestJournalOrders_(context.master, payload.branch, russianDateToIso_(journalId.date));
+    const order = orders.find((item) => normalizeKey_(item.supplier) === normalizeKey_(journalId.supplier));
+    if (!order) throw new Error('Заявка больше не найдена.');
+    if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Статус заявки нельзя изменить.');
+    updateRequestJournalStatus_(context.master, order, payload.branch, 'Заказано', ['Черновик', 'Корректировка']);
+    return readRequestJournalOrders_(context.master, payload.branch, order.date)
+      .find((item) => normalizeKey_(item.supplier) === normalizeKey_(order.supplier));
+  }
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
   if (isOrderDeadlinePassed_(context.master, order)) {
@@ -919,6 +1013,11 @@ function timeToMinutes_(value) {
 function formatRussianDate_(isoDate) {
   const parts = isoDate.split('-');
   return parts[2] + '.' + parts[1] + '.' + parts[0];
+}
+
+function russianDateToIso_(date) {
+  const parts = clean_(date).split('.');
+  return [parts[2], parts[1], parts[0]].join('-');
 }
 
 function readCatalog_(spreadsheet) {

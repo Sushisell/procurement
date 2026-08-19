@@ -402,7 +402,7 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.8.0</div>
+  <div id="appVersion" class="version-badge">v0.8.2</div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -464,7 +464,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.8.0';
+    const APP_VERSION = 'v0.8.2';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -479,6 +479,7 @@
       latestOrder: null,
       receiptOrders: [],
       loadingReceipt: false,
+      loadingDrafts: false,
       draftOrders: [],
     };
 
@@ -527,6 +528,12 @@
       });
       el('supplier').addEventListener('change', () => {
         state.activeSupplier = el('supplier').value;
+        if (state.mode === 'correction') {
+          state.latestOrder = state.receiptOrders.find((order) => order.supplier === state.activeSupplier) || null;
+          renderReceipt();
+          updateSubmitState();
+          return;
+        }
         renderSupplier();
         updateTotals();
       });
@@ -586,7 +593,7 @@
       const missing = Math.max(0, minimum - progress.current);
       const minimumLabel = formatMinimum(info);
       const unavailable = isSelectedDateUnavailable(info);
-      const existingDraft = state.draftOrders.find((order) => order.supplier === group.supplier);
+      const existingDraft = state.draftOrders.find((order) => sameText(order.supplier, group.supplier));
       const cutoffText = info.deliveryRules?.length
         ? ''
         : (info.cutoffTime
@@ -695,7 +702,7 @@
       el('receipt').classList.toggle('hidden', ordering);
       el('success').classList.add('hidden');
       el('date').closest('.setup-field').classList.remove('hidden');
-      el('supplier').closest('.setup-field').classList.toggle('hidden', !ordering);
+      el('supplier').closest('.setup-field').classList.toggle('hidden', !ordering && mode !== 'correction');
       el('date').min = ordering ? state.data.today : '';
       el('date').closest('.setup-field').querySelector('label').textContent = receiving
         ? 'День получения'
@@ -704,15 +711,30 @@
         : receiving ? 'Здесь доступны только заявки со статусом «Заказано».'
           : archive ? 'Полученные заявки филиала.' : 'Изменяйте отправленные черновики до срока поставщика.';
       el('footerLabel').textContent = ordering ? 'Общая сумма' : 'Выбранная заявка';
-      if (ordering) { renderSupplier(); updateTotals(); loadDrafts(); } else loadLatestOrder();
+      if (ordering) { renderSupplierOptions(); renderSupplier(); updateTotals(); loadDrafts(); } else loadLatestOrder();
       updateSubmitState();
     }
 
     function loadDrafts(render = true) {
-      if (!el('branch').value || !el('date').value) { state.draftOrders = []; if (render) renderSupplier(); return; }
-      runServer('getOrders', { branch: el('branch').value, date: el('date').value, view: 'correction' })
-        .then((orders) => { state.draftOrders = orders || []; if (render && state.mode === 'order') { renderSupplier(); updateSubmitState(); } })
-        .catch((error) => { el('status').textContent = error.message || String(error); });
+      const branch = el('branch').value;
+      const date = el('date').value;
+      state.draftOrders = [];
+      if (!branch || !date) { state.loadingDrafts = false; if (render) renderSupplier(); return; }
+      state.loadingDrafts = true;
+      updateSubmitState();
+      runServer('getOrders', { branch, date, view: 'correction' })
+        .then((orders) => {
+          if (branch !== el('branch').value || date !== el('date').value) return;
+          state.loadingDrafts = false;
+          state.draftOrders = orders || [];
+          if (render && state.mode === 'order') { renderSupplier(); updateSubmitState(); }
+        })
+        .catch((error) => {
+          if (branch !== el('branch').value || date !== el('date').value) return;
+          state.loadingDrafts = false;
+          el('status').textContent = error.message || String(error);
+          updateSubmitState();
+        });
     }
 
     function loadLatestOrder() {
@@ -731,6 +753,7 @@
           state.loadingReceipt = false;
           state.receiptOrders = orders || [];
           state.latestOrder = state.receiptOrders[0] || null;
+          if (state.mode === 'correction') renderCorrectionSupplierOptions();
           renderReceipt();
           updateSubmitState();
         })
@@ -739,6 +762,16 @@
           el('receiptPanel').innerHTML = `<div class="error">${escapeHtml(error.message || String(error))}</div>`;
           updateSubmitState();
         });
+    }
+
+    function renderCorrectionSupplierOptions() {
+      const suppliers = [...new Set(state.receiptOrders.map((order) => order.supplier))];
+      if (!suppliers.includes(state.activeSupplier)) state.activeSupplier = suppliers[0] || '';
+      el('supplier').innerHTML = suppliers.length
+        ? suppliers.map((supplier) => `<option value="${escapeAttr(supplier)}"${supplier === state.activeSupplier ? ' selected' : ''}>${escapeHtml(supplier)}</option>`).join('')
+        : '<option value="">Нет черновиков</option>';
+      el('supplier').disabled = !suppliers.length;
+      state.latestOrder = state.receiptOrders.find((order) => order.supplier === state.activeSupplier) || null;
     }
 
     function renderReceipt() {
@@ -758,10 +791,10 @@
       const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
         .format(new Date(`${order.date}T00:00:00`));
       el('receiptPanel').innerHTML = `
-        <div class="setup-field" style="margin-bottom:12px">
+        ${state.mode === 'correction' ? '' : `<div class="setup-field" style="margin-bottom:12px">
           <label for="receiptSupplier">Поставщик</label>
           <select id="receiptSupplier">${state.receiptOrders.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === order.id ? ' selected' : ''}>${escapeHtml(item.supplier)}</option>`).join('')}</select>
-        </div>
+        </div>`}
         <div class="receipt-head">
           <div><h2 class="receipt-title">${escapeHtml(order.supplier || 'Последняя заявка')}</h2>
           <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
@@ -795,7 +828,7 @@
         }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
         ${order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
       el('refreshReceipt').addEventListener('click', loadLatestOrder);
-      el('receiptSupplier').addEventListener('change', (event) => {
+      el('receiptSupplier')?.addEventListener('change', (event) => {
         state.latestOrder = state.receiptOrders.find((item) => item.id === event.target.value) || null;
         renderReceipt();
         updateSubmitState();
@@ -945,8 +978,8 @@
       const currentItems = collectItems().filter((item) => item.supplier === state.activeSupplier);
       const progress = getMinimumProgress(group, info);
       const meetsMinimum = !progress.minimum || !progress.missing;
-      const hasDraft = state.draftOrders.some((order) => order.supplier === state.activeSupplier);
-      el('submit').disabled = state.submitting || hasDraft || !el('branch').value || !el('employee').value || !el('date').value || isSelectedDateUnavailable(info) || !currentItems.length || !meetsMinimum;
+      const hasDraft = state.draftOrders.some((order) => sameText(order.supplier, state.activeSupplier));
+      el('submit').disabled = state.submitting || state.loadingDrafts || hasDraft || !el('branch').value || !el('employee').value || !el('date').value || isSelectedDateUnavailable(info) || !currentItems.length || !meetsMinimum;
       el('submit').textContent = state.submitting ? 'Отправка…' : 'Отправить';
     }
 
@@ -1043,6 +1076,10 @@
       const normalized = String(value || '').replace(/\s/g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
       const number = Number(normalized);
       return Number.isFinite(number) ? number : 0;
+    }
+
+    function sameText(left, right) {
+      return String(left || '').trim().toLocaleLowerCase('ru-RU') === String(right || '').trim().toLocaleLowerCase('ru-RU');
     }
 
     function key(supplier, product) { return `${supplier}::${product}`; }
