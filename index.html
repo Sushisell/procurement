@@ -734,7 +734,11 @@
           <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
           <button id="refreshReceipt" class="refresh-button" type="button">Обновить</button>
         </div>
-        <div class="received-note">Статус: ${order.status === 'ordered' ? 'заказано — отмечайте поступления' : 'отправлено — заявку можно корректировать'}</div>
+        <div class="received-note">Статус: ${order.status === 'ordered'
+          ? 'заказано — отмечайте поступления'
+          : order.editable === false
+            ? 'отправлено — время изменения заявки прошло'
+            : 'отправлено — заявку можно корректировать'}</div>
         <div style="margin-top:12px">${order.items.filter((item) => {
           const saved = receiptItems[item.product];
           return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
@@ -743,7 +747,7 @@
           if (order.status !== 'ordered') return `<div class="receipt-row">
             <div class="receipt-ordered">${escapeHtml(item.product)}</div>
             <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}">
-              <button type="button" data-edit-step="-1">−</button><output>${item.quantity}</output><button type="button" data-edit-step="1">+</button>
+              <button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output>${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button>
             </div>
           </div>`;
           const remaining = Math.max(0, item.quantity - (saved.actualQuantity || 0));
@@ -755,7 +759,7 @@
             </div>
           </div>`;
         }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
-        ${order.status === 'submitted' ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
+        ${order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
       el('refreshReceipt').addEventListener('click', loadLatestOrder);
       el('receiptSupplier').addEventListener('change', (event) => {
         state.latestOrder = state.receiptOrders.find((item) => item.id === event.target.value) || null;
@@ -887,7 +891,7 @@
       if (state.mode === 'receipt') {
         if (state.latestOrder?.status === 'submitted') {
           el('submit').disabled = true;
-          el('submit').textContent = 'Сначала отметьте «заказана»';
+          el('submit').textContent = state.latestOrder.editable === false ? 'Время заявки прошло' : 'Сначала отметьте «заказана»';
           return;
         }
         const hasActualItems = Boolean(state.latestOrder) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-product]'))

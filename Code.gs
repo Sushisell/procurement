@@ -38,6 +38,7 @@ const CONFIG = {
     yearSuffixFormat: 'yyyy',
     columnsCount: 9,
     firstDataRow: 2,
+    statuses: ['Черновик', 'Корректировка', 'Заказано', 'Получено', 'Получено не все'],
   },
 };
 
@@ -184,6 +185,9 @@ function submitOrder(payload) {
   if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + payload.supplier);
   const existingOrder = readOrdersFromColumn_(monthSheet, dateColumn)
     .find((order) => normalizeKey_(order.supplier) === normalizeKey_(payload.supplier));
+  if (existingOrder && isOrderDeadlinePassed_(master, existingOrder)) {
+    throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
+  }
   if (existingOrder && isOrderLocked_(master, existingOrder, payload.branch)) {
     throw new Error('Заказанную заявку уже нельзя корректировать.');
   }
@@ -284,6 +288,18 @@ function isOrderLocked_(spreadsheet, order, branch) {
     || journalStatuses[normalizeKey_('Получено не все')];
 }
 
+function isOrderDeadlinePassed_(spreadsheet, order) {
+  const suppliers = readSupplierInfo_(spreadsheet.getSheetByName(CONFIG.sheets.suppliers));
+  const supplier = Object.keys(suppliers)
+    .map((name) => suppliers[name])
+    .find((item) => normalizeKey_(item.name) === normalizeKey_(order.supplier));
+  if (!supplier) return false;
+  if (supplier.deliveryRules.length) {
+    return !getDeliveryAvailability_(supplier.deliveryRules, order.date).available;
+  }
+  return Boolean(supplier.earliestDeliveryDate && order.date < supplier.earliestDeliveryDate);
+}
+
 function readRequestJournalOrderStatuses_(spreadsheet, order, branch) {
   const sheet = getRequestJournalSheet_(spreadsheet, formatRussianDate_(order.date));
   const values = sheet.getDataRange().getDisplayValues();
@@ -303,6 +319,12 @@ function applyRequestJournalStatuses_(spreadsheet, orders, branch) {
 
   orders.forEach((order) => {
     if (isOrderLocked_(spreadsheet, order, branch)) order.status = 'ordered';
+    if (order.status !== 'ordered' && isOrderDeadlinePassed_(spreadsheet, order)) {
+      order.editable = false;
+      order.lockReason = 'deadline';
+      return;
+    }
+    order.editable = order.status === 'submitted';
   });
 }
 
@@ -346,6 +368,7 @@ function updateSubmittedOrder(payload) {
   const context = getBranchContext_(payload && payload.branch);
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
+  if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
   if (isOrderLocked_(context.master, order, payload.branch)) throw new Error('Заказанную заявку уже нельзя корректировать.');
   if (!Array.isArray(payload.items)) throw new Error('Не переданы позиции заявки.');
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
@@ -389,6 +412,9 @@ function markOrderOrdered(payload) {
   const context = getBranchContext_(payload && payload.branch);
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
+  if (isOrderDeadlinePassed_(context.master, order)) {
+    throw new Error('Время приёма заявки уже прошло. Статус заявки нельзя изменить.');
+  }
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
   const supplierRow = findSupplierRow_(sheetAndColumn.sheet, order.supplier);
   if (!supplierRow) throw new Error('Не найдена строка поставщика: ' + order.supplier);
@@ -426,7 +452,9 @@ function buildRequestJournalRow_(payload, product, quantity, sum, status) {
 function appendRequestJournalRows_(spreadsheet, rows) {
   if (!rows.length) return;
   const sheet = getRequestJournalSheet_(spreadsheet, rows[0][1]);
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, CONFIG.requestSheet.columnsCount).setValues(rows);
+  const firstRow = sheet.getLastRow() + 1;
+  sheet.getRange(firstRow, 1, rows.length, CONFIG.requestSheet.columnsCount).setValues(rows);
+  applyRequestStatusValidation_(sheet, firstRow, rows.length);
 }
 
 function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
@@ -434,7 +462,11 @@ function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
   const year = getRequestJournalYear_(deliveryDateText);
   const sheetName = year === CONFIG.requestSheet.baseYear ? baseName : baseName + ' ' + year;
   const sheet = spreadsheet.getSheetByName(sheetName);
-  if (sheet) return sheet;
+  if (sheet) {
+    applyRequestStatusValidation_(sheet, CONFIG.requestSheet.firstDataRow,
+      Math.max(1, sheet.getMaxRows() - CONFIG.requestSheet.firstDataRow + 1));
+    return sheet;
+  }
 
   if (year === CONFIG.requestSheet.baseYear) {
     throw new Error('Не найден лист журнала заявок: ' + sheetName);
@@ -447,7 +479,18 @@ function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
   if (lastRow >= CONFIG.requestSheet.firstDataRow) {
     newSheet.getRange(CONFIG.requestSheet.firstDataRow, 1, lastRow - CONFIG.requestSheet.firstDataRow + 1, newSheet.getMaxColumns()).clearContent();
   }
+  applyRequestStatusValidation_(newSheet, CONFIG.requestSheet.firstDataRow,
+    Math.max(1, newSheet.getMaxRows() - CONFIG.requestSheet.firstDataRow + 1));
   return newSheet;
+}
+
+function applyRequestStatusValidation_(sheet, firstRow, rowCount) {
+  const validation = SpreadsheetApp.newDataValidation()
+    .requireValueInList(CONFIG.requestSheet.statuses, true)
+    .setAllowInvalid(false)
+    .setHelpText('Выберите один из допустимых статусов заявки.')
+    .build();
+  sheet.getRange(firstRow, CONFIG.requestSheet.columnsCount, rowCount, 1).setDataValidation(validation);
 }
 
 function getRequestJournalYear_(deliveryDateText) {
