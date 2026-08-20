@@ -394,6 +394,16 @@
     .success-screen { padding: 28px 18px; text-align: center; }
     .success-screen h2 { margin: 0 0 10px; color: var(--success); }
     .archive-items { margin-top: 10px; color: var(--muted); }
+    .plan-box { min-width: 86px; padding: 8px; border-radius: 12px; background: #eef4ff; color: #1849a9; text-align: center; }
+    .plan-box strong { display: block; font-size: 18px; }
+    .plan-box small { display: block; margin-top: 2px; color: var(--muted); }
+    .receipt-fields.readonly { grid-template-columns: 92px minmax(0, 1fr); align-items: end; }
+    .receipt-fields input:disabled, .edit-stepper button:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
+    .correction-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+    .locked-link { display: inline-block; margin-top: 8px; color: var(--primary-dark); font-weight: 850; }
+    .loading-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(23, 32, 51, .42); backdrop-filter: blur(3px); }
+    .loading-dialog { width: min(360px, 100%); padding: 22px; border-radius: 18px; background: #fff; box-shadow: var(--shadow); text-align: center; }
+    .loading-dialog progress { width: 100%; height: 14px; margin: 14px 0 8px; accent-color: var(--primary); }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
       .product-row { grid-template-columns: minmax(0, 1fr) 52px 92px; gap: 4px; }
@@ -402,7 +412,10 @@
   </style>
 </head>
 <body>
-  <div id="appVersion" class="version-badge">v0.8.2</div>
+  <div id="appVersion" class="version-badge">v0.9.0</div>
+  <div id="loadingOverlay" class="loading-overlay hidden" role="dialog" aria-live="polite" aria-label="Загрузка данных">
+    <div class="loading-dialog"><strong>Загружаю данные разделов</strong><progress id="loadingProgress" max="100" value="0"></progress><div id="loadingProgressText">0%</div></div>
+  </div>
   <main class="app">
     <header class="header">
       <h1 class="title">Заявка на продукты</h1>
@@ -464,7 +477,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.8.2';
+    const APP_VERSION = 'v0.9.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -481,6 +494,8 @@
       loadingReceipt: false,
       loadingDrafts: false,
       draftOrders: [],
+      ordersCache: {},
+      prefetchGeneration: 0,
     };
 
     const el = (id) => document.getElementById(id);
@@ -511,19 +526,27 @@
     function bindEvents() {
       el('branch').addEventListener('change', () => {
         renderEmployees();
-        if (state.mode === 'order') loadDrafts();
-        else loadLatestOrder();
+        state.ordersCache = {};
+        prefetchTabs();
+        if (state.mode === 'order') loadDrafts(); else loadLatestOrder();
         updateSubmitState();
       });
-      el('employee').addEventListener('change', updateSubmitState);
+      el('employee').addEventListener('change', () => {
+        if (state.mode !== 'order') renderReceipt();
+        updateSubmitState();
+      });
       el('date').addEventListener('change', () => {
         if (state.mode !== 'order') {
+          state.ordersCache = {};
+          prefetchTabs();
           loadLatestOrder();
           return;
         }
         renderSupplierOptions();
         renderSupplier();
         updateTotals();
+        state.ordersCache = {};
+        prefetchTabs();
         loadDrafts();
       });
       el('supplier').addEventListener('change', () => {
@@ -679,6 +702,8 @@
           el('order').classList.add('hidden');
           el('success').classList.remove('hidden');
           el('status').textContent = `Сумма заявки: ${money(result.total)}`;
+          state.ordersCache = {};
+          prefetchTabs();
           loadDrafts(false);
           updateSubmitState();
         })
@@ -715,6 +740,50 @@
       updateSubmitState();
     }
 
+    function cacheKey(branch, date, view) { return `${branch}::${date}::${view}`; }
+
+    function previousIsoDate(date) {
+      const value = new Date(`${date}T12:00:00Z`);
+      value.setUTCDate(value.getUTCDate() - 1);
+      return value.toISOString().slice(0, 10);
+    }
+
+    function requestOrders(branch, date, view) {
+      const keyValue = cacheKey(branch, date, view);
+      if (state.ordersCache[keyValue]) return state.ordersCache[keyValue];
+      const request = runServer('getOrders', { branch, date, view })
+        .then((orders) => orders || [])
+        .catch((error) => { delete state.ordersCache[keyValue]; throw error; });
+      state.ordersCache[keyValue] = request;
+      return request;
+    }
+
+    function prefetchTabs() {
+      const branch = el('branch').value;
+      const date = el('date').value;
+      if (!branch || !date) return;
+      const generation = ++state.prefetchGeneration;
+      const requests = [
+        requestOrders(branch, date, 'correction'),
+        requestOrders(branch, date, 'receipt'),
+        requestOrders(branch, date, 'archive'),
+        // Архив автоматически прогреваем только за два дня; более старые даты
+        // загружаются отдельно, когда пользователь выбирает их в поле даты.
+        requestOrders(branch, previousIsoDate(date), 'archive'),
+      ];
+      let complete = 0;
+      el('loadingOverlay').classList.remove('hidden');
+      const updateProgress = () => {
+        if (generation !== state.prefetchGeneration) return;
+        complete += 1;
+        const percent = Math.round(complete / requests.length * 100);
+        el('loadingProgress').value = percent;
+        el('loadingProgressText').textContent = `${percent}%`;
+        if (complete === requests.length) el('loadingOverlay').classList.add('hidden');
+      };
+      requests.forEach((request) => request.then(updateProgress, updateProgress));
+    }
+
     function loadDrafts(render = true) {
       const branch = el('branch').value;
       const date = el('date').value;
@@ -722,11 +791,11 @@
       if (!branch || !date) { state.loadingDrafts = false; if (render) renderSupplier(); return; }
       state.loadingDrafts = true;
       updateSubmitState();
-      runServer('getOrders', { branch, date, view: 'correction' })
+      requestOrders(branch, date, 'correction')
         .then((orders) => {
           if (branch !== el('branch').value || date !== el('date').value) return;
           state.loadingDrafts = false;
-          state.draftOrders = orders || [];
+          state.draftOrders = (orders || []).filter((order) => order.status === 'submitted');
           if (render && state.mode === 'order') { renderSupplier(); updateSubmitState(); }
         })
         .catch((error) => {
@@ -739,6 +808,8 @@
 
     function loadLatestOrder() {
       const branch = el('branch').value;
+      const requestedMode = state.mode;
+      const requestedDate = el('date').value;
       state.latestOrder = null;
       state.receiptOrders = [];
       if (!branch) {
@@ -748,8 +819,9 @@
       }
       state.loadingReceipt = true;
       el('receiptPanel').innerHTML = '<div class="empty">Загружаю последнюю заявку…</div>';
-      runServer('getOrders', { branch, date: el('date').value, view: state.mode })
+      requestOrders(branch, requestedDate, requestedMode)
         .then((orders) => {
+          if (branch !== el('branch').value || requestedDate !== el('date').value || requestedMode !== state.mode) return;
           state.loadingReceipt = false;
           state.receiptOrders = orders || [];
           state.latestOrder = state.receiptOrders[0] || null;
@@ -788,6 +860,14 @@
         return;
       }
       const receiptItems = Object.fromEntries((order.receipt?.items || []).map((item) => [item.orderedProduct, item]));
+      const catalogGroup = state.data.catalog.find((group) => sameText(group.supplier, order.supplier));
+      const orderByProduct = Object.fromEntries(order.items.map((item) => [String(item.product).toLocaleLowerCase('ru-RU'), item]));
+      const correctionItems = state.mode === 'correction' && catalogGroup
+        ? catalogGroup.products.map((item) => ({ ...item, quantity: orderByProduct[item.product.toLocaleLowerCase('ru-RU')]?.quantity || 0 }))
+        : order.items;
+      const correctionInfo = state.data.suppliers[order.supplier] || {};
+      const correctionTotal = correctionItems.reduce((sum, item) => sum + item.quantity * priceForDate(item, order.date), 0);
+      const correctionMinimum = minimumNumber(correctionInfo.minimum);
       const formattedDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
         .format(new Date(`${order.date}T00:00:00`));
       el('receiptPanel').innerHTML = `
@@ -804,30 +884,38 @@
           ? 'заказано — отмечайте поступления'
           : order.editable === false
             ? 'отправлено — время изменения заявки прошло'
-            : 'отправлено — заявку можно корректировать'}</div>
-        <div style="margin-top:12px">${order.items.filter((item) => {
+            : 'отправлено — заявку можно корректировать'}
+          ${state.mode === 'correction' && (order.status === 'ordered' || order.editable === false) ? '<br><strong>Заявка на этот день уже заказана. Следующий этап — приёмка.</strong><br><button id="openReceipt" class="secondary-action locked-link" type="button">Перейти к приёмке →</button>' : ''}</div>
+        ${state.mode === 'correction' ? `<div class="correction-summary">
+          <div class="summary-cloud total"><span class="summary-label">Сумма заявки</span><span class="summary-value" data-correction-total>${money(correctionTotal)}</span></div>
+          <div class="summary-cloud"><span class="summary-label">Минимальный заказ</span><span class="summary-value">${escapeHtml(formatMinimum(correctionInfo))}</span></div>
+        </div><div id="correctionMinimumWarning" class="meta${correctionMinimum && correctionTotal < correctionMinimum ? '' : ' hidden'}" style="color:var(--danger)">Сумма заявки меньше минимальной. Сохранение недоступно.</div>` : ''}
+        <div style="margin-top:12px">${correctionItems.filter((item) => {
           const saved = receiptItems[item.product];
           return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
         }).map((item, index) => {
           const saved = receiptItems[item.product] || {};
-          if (order.status === 'submitted') return `<div class="receipt-row">
+          if (state.mode === 'correction') return `<div class="receipt-row">
             <div class="receipt-ordered">${escapeHtml(item.product)}</div>
-            <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}">
+            <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}" data-edit-price="${priceForDate(item, order.date)}">
               <button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output>${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button>
             </div>
           </div>`;
           if (order.status === 'received') return `<div class="receipt-row"><div class="receipt-ordered">${escapeHtml(item.product)} — ${item.quantity} ${escapeHtml(item.unit || '')}</div><div class="archive-items">Получено полностью</div></div>`;
           const remaining = Math.max(0, item.quantity - (saved.actualQuantity || 0));
           return `<div class="receipt-row">
-            <div class="receipt-ordered">${escapeHtml(item.product)} — осталось ${remaining} ${escapeHtml(item.unit || '')}</div>
-            <div class="receipt-fields">
-              <div><label for="actualProduct${index}">Что приехало</label><input id="actualProduct${index}" data-actual-product data-ordered-product="${escapeAttr(item.product)}" value="${escapeAttr(saved.actualProduct || item.product)}"></div>
-              <div><label for="actualQuantity${index}">Сейчас</label><input id="actualQuantity${index}" data-actual-quantity type="number" min="0" max="${remaining}" step="any" value="0"></div>
+            <div class="receipt-ordered">${escapeHtml(item.product)}</div>
+            <div class="receipt-fields readonly">
+              <div class="plan-box"><span>План</span><strong>${remaining}</strong><small>${escapeHtml(item.unit || '')}</small></div>
+              <div><label for="actualQuantity${index}">Получено</label><input id="actualQuantity${index}" data-actual-quantity data-ordered-product="${escapeAttr(item.product)}" type="number" min="0" max="${remaining}" step="any" value="0"${!el('employee').value ? ' disabled' : ''}></div>
             </div>
           </div>`;
         }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
-        ${order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button><button id="markOrdered" class="secondary-action" type="button">Заявка заказана</button></div>' : ''}`;
-      el('refreshReceipt').addEventListener('click', loadLatestOrder);
+        ${state.mode === 'correction' && order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions" style="grid-template-columns:1fr"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button></div>' : ''}`;
+      el('refreshReceipt').addEventListener('click', () => {
+        delete state.ordersCache[cacheKey(el('branch').value, el('date').value, state.mode)];
+        loadLatestOrder();
+      });
       el('receiptSupplier')?.addEventListener('change', (event) => {
         state.latestOrder = state.receiptOrders.find((item) => item.id === event.target.value) || null;
         renderReceipt();
@@ -837,11 +925,13 @@
         const output = button.parentElement.querySelector('output');
         output.value = Math.max(0, toClientNumber(output.value) + Number(button.dataset.editStep));
         output.textContent = output.value;
+        updateCorrectionSummary();
       }));
       el('saveCorrection')?.addEventListener('click', saveOrderCorrection);
-      el('markOrdered')?.addEventListener('click', markOrderOrdered);
+      el('openReceipt')?.addEventListener('click', () => setMode('receipt'));
       el('receiptPanel').querySelectorAll('input').forEach((input) => input.addEventListener('input', updateSubmitState));
-      el('grandTotal').textContent = `${order.items.length} поз.`;
+      el('grandTotal').textContent = state.mode === 'correction' ? money(correctionTotal) : `${order.items.length} поз.`;
+      updateCorrectionSummary();
     }
 
     function submitReceipt() {
@@ -849,12 +939,11 @@
       state.submitting = true;
       updateSubmitState();
       el('status').textContent = 'Сохраняю приёмку…';
-      const products = Array.from(el('receiptPanel').querySelectorAll('[data-actual-product]'));
       const quantities = Array.from(el('receiptPanel').querySelectorAll('[data-actual-quantity]'));
-      const items = products.map((input, index) => ({
+      const items = quantities.map((input) => ({
         orderedProduct: input.dataset.orderedProduct,
-        actualProduct: input.value.trim(),
-        actualQuantity: toClientNumber(quantities[index].value),
+        actualProduct: input.dataset.orderedProduct,
+        actualQuantity: toClientNumber(input.value),
       }));
       runServer('receiveOrder', {
         branch: el('branch').value,
@@ -864,6 +953,8 @@
       }).then(() => {
         state.submitting = false;
         el('status').textContent = 'Приёмка сохранена.';
+        state.ordersCache = {};
+        prefetchTabs();
         loadLatestOrder();
       }).catch((error) => {
         state.submitting = false;
@@ -873,13 +964,36 @@
     }
 
     function saveOrderCorrection() {
+      if (!el('employee').value) {
+        el('status').textContent = 'Сначала выберите ФИО сотрудника.';
+        return;
+      }
       const items = Array.from(el('receiptPanel').querySelectorAll('[data-edit-product]')).map((node) => ({
         product: node.dataset.editProduct,
         quantity: toClientNumber(node.querySelector('output').value),
+        price: toClientNumber(node.dataset.editPrice),
       }));
-      runServer('updateSubmittedOrder', { branch: el('branch').value, orderId: state.latestOrder.id, items })
-        .then(() => { el('status').textContent = 'Изменения сохранены.'; loadLatestOrder(); })
+      const total = items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      const minimum = minimumNumber((state.data.suppliers[state.latestOrder.supplier] || {}).minimum);
+      if (minimum && total < minimum) {
+        el('status').textContent = 'Нельзя сохранить: сумма заявки меньше минимальной.';
+        return;
+      }
+      runServer('updateSubmittedOrder', { branch: el('branch').value, employee: el('employee').value, orderId: state.latestOrder.id, items })
+        .then(() => { el('status').textContent = 'Изменения сохранены.'; state.ordersCache = {}; prefetchTabs(); loadLatestOrder(); })
         .catch((error) => { el('status').textContent = error.message || String(error); });
+    }
+
+    function updateCorrectionSummary() {
+      if (state.mode !== 'correction' || !state.latestOrder) return;
+      const nodes = Array.from(el('receiptPanel').querySelectorAll('[data-edit-product]'));
+      const total = nodes.reduce((sum, node) => sum + toClientNumber(node.querySelector('output').value) * toClientNumber(node.dataset.editPrice), 0);
+      const minimum = minimumNumber((state.data.suppliers[state.latestOrder.supplier] || {}).minimum);
+      const belowMinimum = Boolean(minimum && total < minimum);
+      el('receiptPanel').querySelector('[data-correction-total]').textContent = money(total);
+      el('correctionMinimumWarning')?.classList.toggle('hidden', !belowMinimum);
+      if (el('saveCorrection')) el('saveCorrection').disabled = belowMinimum || !el('employee').value;
+      el('grandTotal').textContent = money(total);
     }
 
     function markOrderOrdered() {
@@ -966,8 +1080,7 @@
           el('submit').textContent = state.latestOrder.editable === false ? 'Время заявки прошло' : 'Сначала отметьте «заказана»';
           return;
         }
-        const hasActualItems = Boolean(state.latestOrder) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-product]'))
-          .every((input) => input.value.trim()) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-quantity]'))
+        const hasActualItems = Boolean(state.latestOrder) && Array.from(el('receiptPanel').querySelectorAll('[data-actual-quantity]'))
           .some((input) => toClientNumber(input.value) > 0);
         el('submit').disabled = state.submitting || state.loadingReceipt || !el('branch').value || !el('employee').value || !hasActualItems;
         el('submit').textContent = state.submitting ? 'Сохранение…' : 'Сохранить приёмку';
