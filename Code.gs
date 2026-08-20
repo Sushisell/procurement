@@ -224,7 +224,9 @@ function getOrders(payload) {
     if (!order.receipt && order.status === 'submitted') markOrderAsNotReceived_(context.spreadsheet, order);
   });
   const view = clean_(payload && payload.view).toLowerCase();
-  if (view === 'correction') return orders.filter((order) => order.status === 'submitted');
+  // В корректировке также возвращаем уже заказанные заявки: интерфейс объяснит,
+  // почему они заблокированы, и предложит перейти к приёмке.
+  if (view === 'correction') return orders.filter((order) => order.status === 'submitted' || order.status === 'ordered');
   if (view === 'receipt') return orders.filter((order) => order.status === 'ordered');
   if (view === 'archive') return orders.filter((order) => order.status === 'received');
   return orders;
@@ -425,6 +427,7 @@ function applyJournalReceipt_(spreadsheet, order, branch, receivedItems, employe
 }
 
 function updateSubmittedOrder(payload) {
+  if (!payload || !payload.employee) throw new Error('Выберите ФИО сотрудника, который корректирует заявку.');
   const context = getBranchContext_(payload && payload.branch);
   const journalId = parseJournalOrderId_(payload && payload.orderId);
   if (journalId) return updateJournalOrder_(context.master, payload, journalId);
@@ -433,27 +436,46 @@ function updateSubmittedOrder(payload) {
   if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
   if (isOrderLocked_(context.master, order, payload.branch)) throw new Error('Заказанную заявку уже нельзя корректировать.');
   if (!Array.isArray(payload.items)) throw new Error('Не переданы позиции заявки.');
+  const employees = readEmployees_(context.employeesSheet)[payload.branch] || [];
+  if (!employees.some((name) => normalizeKey_(name) === normalizeKey_(payload.employee))) {
+    throw new Error('Сотрудник не найден в выбранном филиале.');
+  }
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
   const requestRows = [];
   const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
   const allowed = {};
-  order.items.forEach((item) => { allowed[normalizeKey_(item.product)] = true; });
+  const catalogGroup = readCatalog_(context.master)
+    .find((group) => normalizeKey_(group.supplier) === normalizeKey_(order.supplier));
+  (catalogGroup && catalogGroup.products || []).forEach((item) => { allowed[normalizeKey_(item.product)] = item; });
   if (!payload.items.some((item) => toNumber_(item.quantity) > 0)) {
     throw new Error('В заявке должна остаться хотя бы одна позиция.');
   }
+  const supplierInfos = readSupplierInfo_(context.master.getSheetByName(CONFIG.sheets.suppliers));
+  const supplierInfo = Object.keys(supplierInfos)
+    .map((name) => supplierInfos[name])
+    .find((item) => normalizeKey_(item.name) === normalizeKey_(order.supplier));
+  if (supplierInfo) validateSupplierMinimum_({ items: payload.items.map((item) => {
+    const product = allowed[normalizeKey_(item.product)] || {};
+    const prices = (product.prices || []).filter((entry) => !entry.effectiveDate || entry.effectiveDate <= order.date);
+    return { quantity: item.quantity, unit: product.unit, price: toNumber_(prices.length ? prices[prices.length - 1].price : product.price) };
+  }) }, supplierInfo);
   payload.items.forEach((item) => {
-    if (!allowed[normalizeKey_(item.product)]) throw new Error('Нельзя добавить товар из другой заявки.');
+    const catalogItem = allowed[normalizeKey_(item.product)];
+    if (!catalogItem) throw new Error('Нельзя добавить товар из номенклатуры другого поставщика.');
     const row = rowByProduct[normalizeKey_(item.product)];
     if (!row) return;
     const quantity = Math.max(0, toNumber_(item.quantity));
-    const delta = quantity - toNumber_(item.originalQuantity || order.items.find((orderItem) => normalizeKey_(orderItem.product) === normalizeKey_(item.product)).quantity);
-    if (delta < 0) {
+    const originalItem = order.items.find((orderItem) => normalizeKey_(orderItem.product) === normalizeKey_(item.product));
+    const delta = quantity - toNumber_(originalItem && originalItem.quantity);
+    if (delta) {
+      const prices = (catalogItem.prices || []).filter((entry) => !entry.effectiveDate || entry.effectiveDate <= order.date);
+      const price = toNumber_(prices.length ? prices[prices.length - 1].price : catalogItem.price);
       requestRows.push(buildRequestJournalRow_({
         date: order.date,
         supplier: order.supplier,
         branch: payload.branch,
-        employee: order.initiator,
-      }, item.product, delta, 0, 'Корректировка'));
+        employee: payload.employee,
+      }, item.product, delta, delta * price, 'Корректировка'));
     }
     sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
       .setValue(quantity || '')
@@ -479,17 +501,38 @@ function updateJournalOrder_(spreadsheet, payload, journalId) {
   if (!Array.isArray(payload.items) || !payload.items.some((item) => toNumber_(item.quantity) > 0)) {
     throw new Error('В заявке должна остаться хотя бы одна позиция.');
   }
+  const employeesSheet = getFirstExistingSheet_(spreadsheet, CONFIG.sheets.employeesCandidates);
+  const employees = readEmployees_(employeesSheet)[payload.branch] || [];
+  if (!employees.some((name) => normalizeKey_(name) === normalizeKey_(payload.employee))) {
+    throw new Error('Сотрудник не найден в выбранном филиале.');
+  }
+  const suppliers = readSupplierInfo_(spreadsheet.getSheetByName(CONFIG.sheets.suppliers));
+  const supplier = Object.keys(suppliers).map((name) => suppliers[name])
+    .find((item) => normalizeKey_(item.name) === normalizeKey_(order.supplier));
+  if (!supplier) throw new Error('Не найден поставщик: ' + order.supplier);
+  const catalogGroup = readCatalog_(spreadsheet)
+    .find((group) => normalizeKey_(group.supplier) === normalizeKey_(order.supplier));
+  const catalog = {};
+  (catalogGroup && catalogGroup.products || []).forEach((item) => { catalog[normalizeKey_(item.product)] = item; });
   const original = {};
   order.items.forEach((item) => { original[normalizeKey_(item.product)] = item; });
   const rows = [];
+  const minimumItems = [];
   payload.items.forEach((item) => {
-    const oldItem = original[normalizeKey_(item.product)];
-    if (!oldItem) throw new Error('Нельзя добавить товар из другой заявки.');
-    const delta = Math.max(0, toNumber_(item.quantity)) - oldItem.quantity;
+    const productKey = normalizeKey_(item.product);
+    const oldItem = original[productKey];
+    const catalogItem = catalog[productKey];
+    if (!catalogItem) throw new Error('Товар не найден в номенклатуре поставщика: ' + clean_(item.product));
+    const quantity = Math.max(0, toNumber_(item.quantity));
+    const priceEntries = (catalogItem.prices || []).filter((entry) => !entry.effectiveDate || entry.effectiveDate <= order.date);
+    const price = toNumber_(priceEntries.length ? priceEntries[priceEntries.length - 1].price : catalogItem.price);
+    minimumItems.push({ product: catalogItem.product, quantity, price, unit: catalogItem.unit });
+    const delta = quantity - toNumber_(oldItem && oldItem.quantity);
     if (delta) rows.push(buildRequestJournalRow_({
-      date: order.date, supplier: order.supplier, branch: payload.branch, employee: order.initiator,
-    }, oldItem.product, delta, 0, 'Корректировка'));
+      date: order.date, supplier: order.supplier, branch: payload.branch, employee: payload.employee,
+    }, catalogItem.product, delta, delta * price, 'Корректировка'));
   });
+  validateSupplierMinimum_({ items: minimumItems }, supplier);
   appendRequestJournalRows_(spreadsheet, rows);
   return readRequestJournalOrders_(spreadsheet, payload.branch, order.date)
     .find((item) => normalizeKey_(item.supplier) === normalizeKey_(order.supplier));
