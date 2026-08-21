@@ -416,9 +416,24 @@
     .receipt-fields.readonly { grid-template-columns: 92px minmax(0, 1fr); align-items: end; }
     .receipt-fields input:disabled, [data-edit-price] button:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
     .locked-link { display: inline-block; margin-top: 8px; color: var(--primary-dark); font-weight: 850; }
-    .loading-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(23, 32, 51, .42); backdrop-filter: blur(3px); }
-    .loading-dialog { width: min(360px, 100%); padding: 22px; border-radius: 18px; background: #fff; box-shadow: var(--shadow); text-align: center; }
-    .loading-dialog progress { width: 100%; height: 14px; margin: 14px 0 8px; accent-color: var(--primary); }
+    .saving-overlay { position: fixed; inset: 0; z-index: 110; display: grid; place-items: center; padding: 24px; background: rgba(23, 32, 51, .48); backdrop-filter: blur(4px); }
+    .saving-dialog { width: min(360px, 100%); padding: 24px 20px 20px; border-radius: 22px; background: #fff; box-shadow: var(--shadow); text-align: center; }
+    .saving-title { display: block; margin-bottom: 4px; font-size: 18px; }
+    .saving-caption { color: var(--muted); font-size: 14px; }
+    .packing-scene { position: relative; width: 180px; height: 150px; margin: 10px auto 4px; overflow: hidden; }
+    .packing-product { position: absolute; top: 2px; left: calc(50% - 14px); z-index: 2; font-size: 28px; filter: drop-shadow(0 3px 3px rgba(16, 24, 40, .18)); animation: pack-product 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+    .packing-product:nth-child(2) { animation-delay: -.6s; }
+    .packing-product:nth-child(3) { animation-delay: -1.2s; }
+    .packing-bag { position: absolute; left: 50%; bottom: 2px; z-index: 3; width: 100px; height: 88px; transform: translateX(-50%); border-radius: 8px 8px 20px 20px; background: linear-gradient(135deg, #fdb022, #f79009); box-shadow: 0 10px 18px rgba(247, 144, 9, .24); }
+    .packing-bag::before { content: ''; position: absolute; left: 24px; top: -24px; width: 48px; height: 38px; border: 8px solid #f79009; border-bottom: 0; border-radius: 28px 28px 0 0; }
+    .packing-bag::after { content: '✓'; position: absolute; inset: 22px 0 auto; color: #fff; font-size: 30px; font-weight: 900; }
+    @keyframes pack-product {
+      0% { opacity: 0; transform: translate(-58px, -18px) rotate(-18deg) scale(.75); }
+      18% { opacity: 1; }
+      68% { opacity: 1; transform: translate(12px, 74px) rotate(12deg) scale(1); }
+      82%, 100% { opacity: 0; transform: translate(12px, 92px) rotate(12deg) scale(.65); }
+    }
+    @media (prefers-reduced-motion: reduce) { .packing-product { animation-duration: 4s; } }
     @media (min-width: 560px) { .product-name { font-size: 15px; } }
     @media (max-width: 420px) {
       .product-row { grid-template-columns: minmax(0, 1fr) 52px 92px; gap: 4px; }
@@ -427,8 +442,15 @@
   </style>
 </head>
 <body>
-  <div id="loadingOverlay" class="loading-overlay hidden" role="dialog" aria-live="polite" aria-label="Загрузка данных">
-    <div class="loading-dialog"><strong>Загружаю данные разделов</strong><progress id="loadingProgress" max="100" value="0"></progress><div id="loadingProgressText">0%</div></div>
+  <div id="savingOverlay" class="saving-overlay hidden" role="dialog" aria-modal="true" aria-live="polite" aria-label="Сохранение заявки">
+    <div class="saving-dialog">
+      <strong class="saving-title">Складываем продукты в пакет</strong>
+      <div class="saving-caption">Записываем новую заявку, пожалуйста, подождите…</div>
+      <div class="packing-scene" aria-hidden="true">
+        <span class="packing-product">🥕</span><span class="packing-product">🍎</span><span class="packing-product">🥛</span>
+        <div class="packing-bag"></div>
+      </div>
+    </div>
   </div>
   <main class="app">
     <header class="header">
@@ -497,7 +519,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.12.0';
+    const APP_VERSION = 'v0.14.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -667,18 +689,14 @@
     }
 
     function renderSupplierOptions() {
-      const date = el('date').value;
-      const availableGroups = state.data.catalog.filter((group) => {
-        const info = state.data.suppliers[group.supplier] || {};
-        return date && !isDateUnavailable(info, date);
-      });
-      if (!availableGroups.some((group) => group.supplier === state.activeSupplier)) {
-        state.activeSupplier = availableGroups[0]?.supplier || '';
+      const groups = state.data.catalog;
+      if (!groups.some((group) => group.supplier === state.activeSupplier)) {
+        state.activeSupplier = groups[0]?.supplier || '';
       }
-      el('supplier').innerHTML = availableGroups.length
-        ? availableGroups.map((group) => `<option value="${escapeAttr(group.supplier)}"${group.supplier === state.activeSupplier ? ' selected' : ''}>${escapeHtml(group.supplier)}</option>`).join('')
-        : '<option value="">Нет доступных поставщиков</option>';
-      el('supplier').disabled = !availableGroups.length;
+      el('supplier').innerHTML = groups.length
+        ? groups.map((group) => `<option value="${escapeAttr(group.supplier)}"${group.supplier === state.activeSupplier ? ' selected' : ''}>${escapeHtml(group.supplier)}</option>`).join('')
+        : '<option value="">Нет поставщиков</option>';
+      el('supplier').disabled = !groups.length;
     }
 
     function renderSupplier() {
@@ -759,6 +777,7 @@
       state.submitting = true;
       updateSubmitState();
       el('status').textContent = 'Отправляю заявку…';
+      toggleSavingAnimation(true);
 
       const payload = {
         branch: el('branch').value,
@@ -770,6 +789,7 @@
 
       runServer('submitOrder', payload)
         .then((result) => {
+          toggleSavingAnimation(false);
           state.submitting = false;
           state.quantities = {};
           el('success').innerHTML = `<div class="card success-screen"><h2>Спасибо за заявку!</h2><p>Заявка сохранена как черновик.</p><p>Корректировка доступна во вкладке «Корректировка» <strong>${escapeHtml(result.correctionUntil || 'до окончания приёма заявок поставщиком')}</strong>.</p><button id="successCorrection" class="secondary-action" type="button">Перейти к корректировке</button></div>`;
@@ -783,6 +803,7 @@
           updateSubmitState();
         })
         .catch((error) => {
+          toggleSavingAnimation(false);
           state.submitting = false;
           el('status').textContent = error.message || String(error);
           updateSubmitState();
@@ -839,25 +860,24 @@
       const date = el('date').value;
       if (!branch || !date) return;
       const generation = ++state.prefetchGeneration;
-      const requests = [
-        requestOrders(branch, date, 'correction'),
-        requestOrders(branch, date, 'receipt'),
-        requestOrders(branch, date, 'archive'),
-        // Архив автоматически прогреваем только за два дня; более старые даты
-        // загружаются отдельно, когда пользователь выбирает их в поле даты.
-        requestOrders(branch, previousIsoDate(date), 'archive'),
+      const queue = [
+        () => requestOrders(branch, date, 'correction'),
+        () => requestOrders(branch, date, 'receipt'),
+        () => requestOrders(branch, date, 'archive'),
+        // Старый архив прогревается последним и не конкурирует с данными,
+        // которые пользователь может открыть сразу после авторизации.
+        () => requestOrders(branch, previousIsoDate(date), 'archive'),
       ];
-      let complete = 0;
-      el('loadingOverlay').classList.remove('hidden');
-      const updateProgress = () => {
-        if (generation !== state.prefetchGeneration) return;
-        complete += 1;
-        const percent = Math.round(complete / requests.length * 100);
-        el('loadingProgress').value = percent;
-        el('loadingProgressText').textContent = `${percent}%`;
-        if (complete === requests.length) el('loadingOverlay').classList.add('hidden');
+      const loadNext = (index) => {
+        if (generation !== state.prefetchGeneration || index >= queue.length) return;
+        queue[index]().catch(() => []).finally(() => scheduleIdleLoad(() => loadNext(index + 1)));
       };
-      requests.forEach((request) => request.then(updateProgress, updateProgress));
+      scheduleIdleLoad(() => loadNext(0));
+    }
+
+    function scheduleIdleLoad(callback) {
+      if ('requestIdleCallback' in window) window.requestIdleCallback(callback, { timeout: 1200 });
+      else window.setTimeout(callback, 150);
     }
 
     function loadDrafts(render = true) {
@@ -962,7 +982,7 @@
           ${order.status !== 'ordered' && order.lockReason === 'deadline' ? '<br>Срок корректировки истёк.' : ''}</div>` : ''}
         ${state.mode === 'correction' ? `<div id="correctionMinimumWarning" class="meta${correctionMinimum && correctionTotal < correctionMinimum ? '' : ' hidden'}" style="color:var(--danger)">Сумма заявки меньше минимальной. Сохранение недоступно.</div>` : ''}
         <div class="${state.mode === 'correction' ? 'product-table' : ''}" style="margin-top:12px">
-        ${state.mode === 'correction' ? '<div class="product-sticky-head"><div class="product-row product-header"><span>Наименование</span><span>Кратн.</span><span>Кол-во / стоимость</span></div></div>' : ''}
+        ${state.mode === 'correction' ? '<div class="product-sticky-head"><div class="product-row product-header"><span>Наименование</span><span>Кратн.</span><span>Кол-во</span></div></div>' : ''}
         ${correctionItems.filter((item) => {
           const saved = receiptItems[item.product];
           return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
@@ -975,7 +995,7 @@
             <div class="product-unit">${escapeHtml(item.unit || '1')}</div>
             <div class="quantity-control" data-edit-product="${escapeAttr(item.product)}" data-edit-price="${price}">
               <div class="stepper"><button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output class="qty-value">${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button></div>
-              <div class="product-price">по ${money(price)}</div><div class="line-total${item.quantity ? '' : ' hidden'}">${money(item.quantity * price)}</div>
+              <div class="product-price">по ${money(price)}</div><div class="ordered-amount${item.quantity ? '' : ' hidden'}">Заказано: ${escapeHtml(formatOrderedAmount(item.quantity, item.unit))}</div>
             </div>
           </div>`;
           }
@@ -988,8 +1008,7 @@
               <div><label for="actualQuantity${index}">Получено</label><input id="actualQuantity${index}" data-actual-quantity data-ordered-product="${escapeAttr(item.product)}" type="number" min="0" max="${remaining}" step="any" value="0"${!el('employee').value ? ' disabled' : ''}></div>
             </div>
           </div>`;
-        }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
-        ${state.mode === 'correction' && order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions" style="grid-template-columns:1fr"><button id="saveCorrection" class="secondary-action" type="button" aria-describedby="correctionSaveHint">Сохранить изменения</button><div id="correctionSaveHint" class="save-hint hidden" role="status"></div></div>' : ''}`;
+        }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>`;
       el('refreshReceipt').addEventListener('click', () => {
         delete state.ordersCache[cacheKey(el('branch').value, el('date').value, state.mode)];
         loadLatestOrder();
@@ -1005,12 +1024,12 @@
         output.textContent = output.value;
         const row = button.closest('.product-row');
         row.classList.toggle('selected', output.value > 0);
-        const lineTotal = row.querySelector('.line-total');
-        lineTotal.textContent = money(output.value * toClientNumber(button.closest('[data-edit-price]').dataset.editPrice));
-        lineTotal.classList.toggle('hidden', output.value <= 0);
+        const orderedAmount = row.querySelector('.ordered-amount');
+        const product = correctionItems.find((item) => sameText(item.product, button.closest('[data-edit-product]').dataset.editProduct));
+        orderedAmount.textContent = `Заказано: ${formatOrderedAmount(toClientNumber(output.value), product?.unit)}`;
+        orderedAmount.classList.toggle('hidden', output.value <= 0);
         updateCorrectionSummary();
       }));
-      el('saveCorrection')?.addEventListener('click', saveOrderCorrection);
       el('openReceipt')?.addEventListener('click', () => setMode('receipt'));
       el('receiptPanel').querySelectorAll('input').forEach((input) => input.addEventListener('input', updateSubmitState));
       el('grandTotal').textContent = state.mode === 'correction' ? money(correctionTotal) : `${order.items.length} поз.`;
@@ -1090,16 +1109,6 @@
         ? `Ещё заказать на ${formatMinimumValue(minimum - total, info)}`
         : 'Минимальный заказ набран ✓';
       el('correctionMinimumWarning')?.classList.toggle('hidden', !belowMinimum);
-      const saveButton = el('saveCorrection');
-      const saveHint = el('correctionSaveHint');
-      if (saveButton) {
-        saveButton.disabled = blockers.length > 0;
-        saveButton.title = blockers.length ? `Сохранение недоступно: ${blockers.join('; ')}.` : '';
-      }
-      if (saveHint) {
-        saveHint.textContent = blockers.length ? `Почему нельзя сохранить: ${blockers.join('; ')}.` : '';
-        saveHint.classList.toggle('hidden', !blockers.length);
-      }
       el('submit').disabled = blockers.length > 0;
       el('submit').textContent = state.submitting ? 'Сохранение…' : 'Сохранить изменения';
       el('grandTotal').textContent = money(total);
@@ -1365,7 +1374,8 @@
       const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
       const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
       const days = new Date(year, month, 0).getDate();
-      const info = state.data?.suppliers?.[state.activeSupplier] || {};
+      const supplierName = state.activeSupplier || state.authorizedSupplier || el('supplier').value;
+      const info = state.data?.suppliers?.[supplierName] || {};
       const buttons = Array.from({ length: firstWeekday }, () => '<span class="calendar-day outside"></span>');
       for (let day = 1; day <= days; day += 1) {
         const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -1385,6 +1395,11 @@
         closeCalendar();
         el('date').dispatchEvent(new Event('change', { bubbles: true }));
       }));
+    }
+
+    function toggleSavingAnimation(visible) {
+      el('savingOverlay').classList.toggle('hidden', !visible);
+      document.body.setAttribute('aria-busy', String(visible));
     }
 
     function toClientNumber(value) {
