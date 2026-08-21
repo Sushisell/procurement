@@ -69,6 +69,10 @@ function handleApiRequest_(action, payload) {
       return jsonResponse_({ ok: true, data: getBootstrapData() });
     }
 
+    if (action === 'workspace' || action === 'getWorkspaceData') {
+      return jsonResponse_({ ok: true, data: getWorkspaceData(payload) });
+    }
+
     if (action === 'submit' || action === 'submitOrder') {
       return jsonResponse_({ ok: true, data: submitOrder(payload) });
     }
@@ -106,10 +110,36 @@ function jsonResponse_(payload) {
 }
 
 function getBootstrapData() {
+  const master = getMasterSpreadsheet_();
+  const employeesSheet = getFirstExistingSheet_(master, CONFIG.sheets.employeesCandidates);
+  const suppliers = readSupplierInfo_(master.getSheetByName(CONFIG.sheets.suppliers));
+  return {
+    branches: readBranches_(employeesSheet),
+    employeesByBranch: readEmployees_(employeesSheet),
+    supplierNames: Object.keys(suppliers),
+    today: Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd'),
+  };
+}
+
+function getWorkspaceData(payload) {
+  const branch = clean_(payload && payload.branch);
+  const employee = clean_(payload && payload.employee);
+  const supplierName = clean_(payload && payload.supplier);
+  if (!branch || !employee || !supplierName) throw new Error('Выберите филиал, ФИО и поставщика.');
   const cached = readCachedBootstrapData_();
   const data = cached || buildBootstrapData_();
-  data.today = Utilities.formatDate(new Date(), CONFIG.timeZone, 'yyyy-MM-dd');
-  return data;
+  const employees = data.employeesByBranch[branch] || [];
+  if (!employees.some((name) => normalizeKey_(name) === normalizeKey_(employee))) {
+    throw new Error('Сотрудник не найден в выбранном филиале.');
+  }
+  const catalog = data.catalog.filter((group) => normalizeKey_(group.supplier) === normalizeKey_(supplierName));
+  if (!catalog.length) throw new Error('Поставщик не найден: ' + supplierName);
+  const supplierKey = Object.keys(data.suppliers)
+    .find((name) => normalizeKey_(name) === normalizeKey_(supplierName));
+  return {
+    catalog,
+    suppliers: supplierKey ? { [supplierKey]: data.suppliers[supplierKey] } : {},
+  };
 }
 
 function buildBootstrapData_() {
@@ -210,9 +240,13 @@ function getLatestOrder(payload) {
 function getOrders(payload) {
   const context = getBranchContext_(payload && payload.branch);
   const journalOrders = readRequestJournalOrders_(context.master, payload && payload.branch, payload && payload.date);
-  const orders = journalOrders.length
+  let orders = journalOrders.length
     ? journalOrders
     : findOrders_(context.spreadsheet, payload && payload.date);
+  const requestedSupplier = clean_(payload && payload.supplier);
+  if (requestedSupplier) {
+    orders = orders.filter((order) => normalizeKey_(order.supplier) === normalizeKey_(requestedSupplier));
+  }
   applyRequestJournalStatuses_(context.master, orders, payload && payload.branch);
   orders.forEach((order) => {
     if (order.storage === 'journal') return;

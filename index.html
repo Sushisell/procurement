@@ -332,6 +332,7 @@
     }
 
     button.primary:disabled { opacity: .55; }
+    .setup-authorize { grid-column: 1 / -1; }
     .hidden { display: none !important; }
     .empty, .error { padding: 20px; text-align: center; color: var(--muted); }
     .error { color: var(--danger); }
@@ -400,7 +401,7 @@
     .plan-box strong { display: block; font-size: 18px; }
     .plan-box small { display: block; margin-top: 2px; color: var(--muted); }
     .receipt-fields.readonly { grid-template-columns: 92px minmax(0, 1fr); align-items: end; }
-    .receipt-fields input:disabled, .edit-stepper button:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
+    .receipt-fields input:disabled, [data-edit-price] button:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
     .correction-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
     .locked-link { display: inline-block; margin-top: 8px; color: var(--primary-dark); font-weight: 850; }
     .loading-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(23, 32, 51, .42); backdrop-filter: blur(3px); }
@@ -419,11 +420,11 @@
   </div>
   <main class="app">
     <header class="header">
-      <h1 class="title">Заявка на продукты <span id="appVersion" class="version-badge">v0.10.1</span></h1>
+      <h1 class="title">Заявка на продукты <span id="appVersion" class="version-badge">v0.11.0</span></h1>
       <p id="subtitle" class="subtitle">Выберите филиал, ФИО, дату и поставщика.</p>
     </header>
 
-    <nav class="mode-switch" aria-label="Раздел">
+    <nav id="modeSwitch" class="mode-switch hidden" aria-label="Раздел">
       <button id="orderMode" class="mode-button active" type="button">Новая заявка</button>
       <button id="correctionMode" class="mode-button" type="button">Корректировка</button>
       <button id="receiptMode" class="mode-button" type="button">Приёмка</button>
@@ -443,7 +444,7 @@
           <select id="employee"></select>
         </div>
 
-        <div class="setup-field date-field">
+        <div class="setup-field date-field auth-hidden hidden">
           <label for="date">Дата поставки (Красноярск)</label>
           <input id="date" type="date">
         </div>
@@ -452,6 +453,7 @@
           <label for="supplier">Поставщик</label>
           <select id="supplier"></select>
         </div>
+        <button id="authorize" class="primary setup-authorize" type="button">Продолжить</button>
       </div>
       <div id="loadError" class="error hidden"></div>
     </section>
@@ -466,7 +468,7 @@
     <section id="success" class="hidden"></section>
   </main>
 
-  <footer class="bottom-bar">
+  <footer id="bottomBar" class="bottom-bar hidden">
     <div class="bottom-inner">
       <div>
         <div id="footerLabel" class="total-label">Общая сумма</div>
@@ -479,7 +481,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.10.1';
+    const APP_VERSION = 'v0.11.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -498,6 +500,8 @@
       draftOrders: [],
       ordersCache: {},
       prefetchGeneration: 0,
+      authorized: false,
+      authorizedSupplier: '',
     };
 
     const el = (id) => document.getElementById(id);
@@ -511,29 +515,29 @@
       state.data = data;
       el('loading').classList.add('hidden');
       el('setupFields').classList.remove('hidden');
-      el('order').classList.remove('hidden');
       el('date').value = data.today;
       el('date').min = data.today;
       el('appVersion').textContent = APP_VERSION;
 
       renderBranches();
       renderEmployees();
-      renderSupplierOptions();
-      renderSupplier();
+      renderAuthorizationSuppliers();
       bindEvents();
       updateStickyHeaderOffset();
-      updateTotals();
+      el('subtitle').textContent = 'Выберите филиал, ФИО и поставщика для загрузки рабочего места.';
     }
 
     function bindEvents() {
       el('branch').addEventListener('change', () => {
         renderEmployees();
+        if (!state.authorized) return;
         state.ordersCache = {};
         prefetchTabs();
         if (state.mode === 'order') loadDrafts(); else loadLatestOrder();
         updateSubmitState();
       });
       el('employee').addEventListener('change', () => {
+        if (!state.authorized) return;
         // В корректировке не перерисовываем список: иначе выбор сотрудника после
         // изменения количества сбросит ещё не сохранённые правки.
         if (state.mode === 'correction') updateCorrectionSummary();
@@ -555,6 +559,7 @@
         loadDrafts();
       });
       el('supplier').addEventListener('change', () => {
+        if (!state.authorized) return;
         state.activeSupplier = el('supplier').value;
         if (state.mode === 'correction') {
           state.latestOrder = state.receiptOrders.find((order) => order.supplier === state.activeSupplier) || null;
@@ -570,6 +575,7 @@
       window.addEventListener('resize', updateStickyHeaderOffset);
       window.addEventListener('orientationchange', updateStickyHeaderOffset);
       el('submit').addEventListener('click', submitOrder);
+      el('authorize').addEventListener('click', authorizeWorkspace);
       el('orderMode').addEventListener('click', () => setMode('order'));
       el('correctionMode').addEventListener('click', () => setMode('correction'));
       el('receiptMode').addEventListener('click', () => setMode('receipt'));
@@ -588,6 +594,53 @@
       const options = ['<option value="">Выберите ФИО</option>']
         .concat(employees.map((name) => `<option>${escapeHtml(name)}</option>`));
       el('employee').innerHTML = options.join('');
+    }
+
+    function renderAuthorizationSuppliers() {
+      el('supplier').innerHTML = ['<option value="">Выберите поставщика</option>']
+        .concat((state.data.supplierNames || []).map((supplier) => `<option value="${escapeAttr(supplier)}">${escapeHtml(supplier)}</option>`))
+        .join('');
+    }
+
+    function authorizeWorkspace() {
+      const branch = el('branch').value;
+      const employee = el('employee').value;
+      const supplier = el('supplier').value;
+      if (!branch || !employee || !supplier) {
+        el('loadError').textContent = 'Выберите филиал, ФИО и поставщика.';
+        el('loadError').classList.remove('hidden');
+        return;
+      }
+      el('authorize').disabled = true;
+      el('authorize').textContent = 'Загрузка…';
+      el('loadError').classList.add('hidden');
+      runServer('getWorkspaceData', { branch, employee, supplier })
+        .then((workspace) => {
+          state.data = { ...state.data, ...workspace };
+          state.authorized = true;
+          state.authorizedSupplier = supplier;
+          state.activeSupplier = supplier;
+          el('branch').disabled = true;
+          el('employee').disabled = true;
+          el('supplier').disabled = true;
+          el('authorize').classList.add('hidden');
+          el('date').closest('.setup-field').classList.remove('hidden');
+          el('modeSwitch').classList.remove('hidden');
+          el('bottomBar').classList.remove('hidden');
+          el('order').classList.remove('hidden');
+          renderSupplierOptions();
+          renderSupplier();
+          updateTotals();
+          loadDrafts();
+          prefetchTabs();
+          el('subtitle').textContent = 'Рабочее место загружено для выбранного филиала и поставщика.';
+        })
+        .catch((error) => {
+          el('authorize').disabled = false;
+          el('authorize').textContent = 'Продолжить';
+          el('loadError').textContent = error.message || String(error);
+          el('loadError').classList.remove('hidden');
+        });
     }
 
     function renderSupplierOptions() {
@@ -678,6 +731,7 @@
 
     function submitOrder() {
       if (state.mode === 'receipt') return submitReceipt();
+      if (state.mode === 'correction') return saveOrderCorrection();
       if (state.submitting) return;
       state.submitting = true;
       updateSubmitState();
@@ -750,7 +804,7 @@
     function requestOrders(branch, date, view) {
       const keyValue = cacheKey(branch, date, view);
       if (state.ordersCache[keyValue]) return state.ordersCache[keyValue];
-      const request = runServer('getOrders', { branch, date, view })
+      const request = runServer('getOrders', { branch, date, view, supplier: state.authorizedSupplier })
         .then((orders) => orders || [])
         .catch((error) => { delete state.ordersCache[keyValue]; throw error; });
       state.ordersCache[keyValue] = request;
@@ -891,17 +945,24 @@
           <div class="summary-cloud total"><span class="summary-label">Сумма заявки</span><span class="summary-value" data-correction-total>${money(correctionTotal)}</span></div>
           <div class="summary-cloud"><span class="summary-label">Минимальный заказ</span><span class="summary-value">${escapeHtml(formatMinimum(correctionInfo))}</span></div>
         </div><div id="correctionMinimumWarning" class="meta${correctionMinimum && correctionTotal < correctionMinimum ? '' : ' hidden'}" style="color:var(--danger)">Сумма заявки меньше минимальной. Сохранение недоступно.</div>` : ''}
-        <div style="margin-top:12px">${correctionItems.filter((item) => {
+        <div class="${state.mode === 'correction' ? 'product-table' : ''}" style="margin-top:12px">
+        ${state.mode === 'correction' ? '<div class="product-sticky-head"><div class="product-row product-header"><span>Наименование</span><span>Кратн.</span><span>Кол-во / стоимость</span></div></div>' : ''}
+        ${correctionItems.filter((item) => {
           const saved = receiptItems[item.product];
           return order.status !== 'ordered' || !saved || saved.actualQuantity < item.quantity;
         }).map((item, index) => {
           const saved = receiptItems[item.product] || {};
-          if (state.mode === 'correction') return `<div class="receipt-row">
-            <div class="receipt-ordered">${escapeHtml(item.product)}</div>
-            <div class="edit-stepper" data-edit-product="${escapeAttr(item.product)}" data-edit-price="${priceForDate(item, order.date)}">
-              <button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output>${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button>
+          if (state.mode === 'correction') {
+            const price = priceForDate(item, order.date);
+            return `<div class="product-row${item.quantity ? ' selected' : ''}">
+            <div class="product-main"><span class="product-name">${escapeHtml(item.product)}</span></div>
+            <div class="product-unit">${escapeHtml(item.unit || '1')}</div>
+            <div class="quantity-control" data-edit-product="${escapeAttr(item.product)}" data-edit-price="${price}">
+              <div class="stepper"><button type="button" data-edit-step="-1"${order.editable === false ? ' disabled' : ''}>−</button><output class="qty-value">${item.quantity}</output><button type="button" data-edit-step="1"${order.editable === false ? ' disabled' : ''}>+</button></div>
+              <div class="product-price">по ${money(price)}</div><div class="line-total${item.quantity ? '' : ' hidden'}">${money(item.quantity * price)}</div>
             </div>
           </div>`;
+          }
           if (order.status === 'received') return `<div class="receipt-row"><div class="receipt-ordered">${escapeHtml(item.product)} — ${item.quantity} ${escapeHtml(item.unit || '')}</div><div class="archive-items">Получено полностью</div></div>`;
           const remaining = Math.max(0, item.quantity - (saved.actualQuantity || 0));
           return `<div class="receipt-row">
@@ -926,6 +987,11 @@
         const output = button.parentElement.querySelector('output');
         output.value = Math.max(0, toClientNumber(output.value) + Number(button.dataset.editStep));
         output.textContent = output.value;
+        const row = button.closest('.product-row');
+        row.classList.toggle('selected', output.value > 0);
+        const lineTotal = row.querySelector('.line-total');
+        lineTotal.textContent = money(output.value * toClientNumber(button.closest('[data-edit-price]').dataset.editPrice));
+        lineTotal.classList.toggle('hidden', output.value <= 0);
         updateCorrectionSummary();
       }));
       el('saveCorrection')?.addEventListener('click', saveOrderCorrection);
@@ -965,6 +1031,7 @@
     }
 
     function saveOrderCorrection() {
+      if (state.submitting || !state.latestOrder || state.latestOrder.status !== 'submitted' || state.latestOrder.editable === false) return;
       if (!el('employee').value) {
         el('status').textContent = 'Сначала выберите ФИО сотрудника.';
         return;
@@ -980,9 +1047,12 @@
         el('status').textContent = 'Нельзя сохранить: сумма заявки меньше минимальной.';
         return;
       }
+      state.submitting = true;
+      updateCorrectionSummary();
+      el('status').textContent = 'Сохраняю изменения…';
       runServer('updateSubmittedOrder', { branch: el('branch').value, employee: el('employee').value, orderId: state.latestOrder.id, items })
-        .then(() => { el('status').textContent = 'Изменения сохранены.'; state.ordersCache = {}; prefetchTabs(); loadLatestOrder(); })
-        .catch((error) => { el('status').textContent = error.message || String(error); });
+        .then(() => { state.submitting = false; el('status').textContent = 'Изменения сохранены.'; state.ordersCache = {}; prefetchTabs(); loadLatestOrder(); })
+        .catch((error) => { state.submitting = false; el('status').textContent = error.message || String(error); updateCorrectionSummary(); });
     }
 
     function updateCorrectionSummary() {
@@ -996,6 +1066,7 @@
       if (!el('employee').value) blockers.push('выберите ФИО сотрудника');
       if (!hasItems) blockers.push('добавьте хотя бы одну позицию');
       if (belowMinimum) blockers.push(`доберите заказ до минимальной суммы (не хватает ${money(minimum - total)})`);
+      if (state.submitting) blockers.push('дождитесь завершения сохранения');
       el('receiptPanel').querySelector('[data-correction-total]').textContent = money(total);
       el('correctionMinimumWarning')?.classList.toggle('hidden', !belowMinimum);
       const saveButton = el('saveCorrection');
@@ -1008,6 +1079,8 @@
         saveHint.textContent = blockers.length ? `Почему нельзя сохранить: ${blockers.join('; ')}.` : '';
         saveHint.classList.toggle('hidden', !blockers.length);
       }
+      el('submit').disabled = blockers.length > 0;
+      el('submit').textContent = state.submitting ? 'Сохранение…' : 'Сохранить изменения';
       el('grandTotal').textContent = money(total);
     }
 
@@ -1041,7 +1114,7 @@
 
     function runHttpApi(method, payload) {
       const url = new URL(API_URL);
-      const actions = { getBootstrapData: 'bootstrap', submitOrder: 'submit', getLatestOrder: 'latestOrder', getOrders: 'orders', receiveOrder: 'receive', updateSubmittedOrder: 'updateOrder', markOrderOrdered: 'markOrdered' };
+      const actions = { getBootstrapData: 'bootstrap', getWorkspaceData: 'workspace', submitOrder: 'submit', getLatestOrder: 'latestOrder', getOrders: 'orders', receiveOrder: 'receive', updateSubmittedOrder: 'updateOrder', markOrderOrdered: 'markOrdered' };
       url.searchParams.set('action', actions[method] || method);
       const options = method === 'getBootstrapData'
         ? { method: 'GET' }
@@ -1102,9 +1175,18 @@
 
     function updateSubmitState() {
       if (state.mode !== 'order') {
-        if (state.mode === 'archive' || state.mode === 'correction') {
+        if (state.mode === 'correction') {
+          const canEdit = state.latestOrder?.status === 'submitted' && state.latestOrder.editable !== false;
+          if (canEdit) updateCorrectionSummary();
+          else {
+            el('submit').disabled = true;
+            el('submit').textContent = state.loadingReceipt ? 'Загрузка…' : 'Корректировка недоступна';
+          }
+          return;
+        }
+        if (state.mode === 'archive') {
           el('submit').disabled = true;
-          el('submit').textContent = state.mode === 'archive' ? 'Архив' : 'Сохраните изменения выше';
+          el('submit').textContent = 'Архив';
           return;
         }
         if (state.latestOrder?.status === 'submitted') {
