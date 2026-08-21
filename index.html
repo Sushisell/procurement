@@ -99,7 +99,7 @@
       letter-spacing: .03em;
     }
 
-    select, input[type="date"], input[type="number"], input[type="search"] {
+    select, input[type="date"], input[type="number"], input[type="search"], .date-picker-button {
       width: 100%;
       min-height: 42px;
       border: 1px solid var(--border);
@@ -109,6 +109,19 @@
       font-size: max(16px, 1em);
       background: #fff;
     }
+
+    .date-picker { position: relative; }
+    .date-picker-button { text-align: left; color: var(--text); }
+    .date-picker-button::after { content: '📅'; float: right; }
+    .calendar-popover { position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; width: min(330px, calc(100vw - 36px)); padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: var(--shadow); }
+    .calendar-head { display: grid; grid-template-columns: 36px 1fr 36px; align-items: center; margin-bottom: 8px; text-align: center; font-weight: 750; }
+    .calendar-head button { height: 34px; border: 0; border-radius: 9px; background: #eef4ff; color: var(--primary-dark); font-size: 20px; }
+    .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .calendar-weekday { padding: 4px 0; color: var(--muted); font-size: 11px; text-align: center; }
+    .calendar-day { min-height: 34px; border: 0; border-radius: 9px; background: transparent; color: var(--text); }
+    .calendar-day.selected { background: var(--primary); color: #fff; font-weight: 750; }
+    .calendar-day:disabled { color: #b8bec9; text-decoration: line-through; background: #f2f4f7; }
+    .calendar-day.outside { visibility: hidden; }
 
     .supplier-card {
       border-radius: 18px;
@@ -316,8 +329,8 @@
     }
 
     .total-label { color: var(--muted); font-size: 13px; }
-    .total-value { font-size: 20px; font-weight: 900; }
-    .total-minimum { margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .total-value { font-size: 18px; font-weight: 750; line-height: 1.15; }
+    .total-minimum { margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 500; }
     .total-minimum.short { color: var(--danger); }
     .total-minimum.ok { color: var(--success); }
 
@@ -386,7 +399,7 @@
     .receipt-fields label { text-transform: none; letter-spacing: 0; }
     .receipt-fields input { min-height: 44px; }
     .receipt-fields input:not([type="number"]) { width: 100%; border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; font: inherit; }
-    .received-note { margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: #ecfdf3; color: #027a48; font-weight: 750; }
+    .received-note { margin: 10px 0 0; padding: 9px 11px; border-radius: 12px; background: #ecfdf3; color: #027a48; font-size: 13px; font-weight: 400; line-height: 1.35; }
     .receipt-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
     .secondary-action { min-height: 44px; border: 1px solid var(--primary); border-radius: 12px; background: #fff; color: var(--primary-dark); font-weight: 850; }
     .edit-stepper { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; max-width: 180px; }
@@ -402,7 +415,6 @@
     .plan-box small { display: block; margin-top: 2px; color: var(--muted); }
     .receipt-fields.readonly { grid-template-columns: 92px minmax(0, 1fr); align-items: end; }
     .receipt-fields input:disabled, [data-edit-price] button:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
-    .correction-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
     .locked-link { display: inline-block; margin-top: 8px; color: var(--primary-dark); font-weight: 850; }
     .loading-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(23, 32, 51, .42); backdrop-filter: blur(3px); }
     .loading-dialog { width: min(360px, 100%); padding: 22px; border-radius: 18px; background: #fff; box-shadow: var(--shadow); text-align: center; }
@@ -445,8 +457,12 @@
         </div>
 
         <div class="setup-field date-field auth-hidden hidden">
-          <label for="date">Дата поставки (Красноярск)</label>
-          <input id="date" type="date">
+          <label for="dateButton">Дата поставки (Красноярск)</label>
+          <div class="date-picker">
+            <button id="dateButton" class="date-picker-button" type="button" aria-haspopup="dialog" aria-expanded="false"></button>
+            <input id="date" type="hidden">
+            <div id="calendar" class="calendar-popover hidden" role="dialog" aria-label="Выбор даты поставки"></div>
+          </div>
         </div>
 
         <div class="setup-field supplier-field">
@@ -477,11 +493,11 @@
       </div>
       <button id="submit" class="primary" disabled>Отправить</button>
     </div>
-    <div id="status" class="toast"></div>
+    <div id="status" class="toast" role="status" aria-live="polite"></div>
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.11.0';
+    const APP_VERSION = 'v0.12.0';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -502,6 +518,7 @@
       prefetchGeneration: 0,
       authorized: false,
       authorizedSupplier: '',
+      calendarMonth: '',
     };
 
     const el = (id) => document.getElementById(id);
@@ -517,6 +534,8 @@
       el('setupFields').classList.remove('hidden');
       el('date').value = data.today;
       el('date').min = data.today;
+      state.calendarMonth = data.today.slice(0, 7);
+      updateDateButton();
       el('appVersion').textContent = APP_VERSION;
 
       renderBranches();
@@ -557,6 +576,10 @@
         state.ordersCache = {};
         prefetchTabs();
         loadDrafts();
+      });
+      el('dateButton').addEventListener('click', () => toggleCalendar());
+      document.addEventListener('click', (event) => {
+        if (!event.target.closest('.date-picker')) closeCalendar();
       });
       el('supplier').addEventListener('change', () => {
         if (!state.authorized) return;
@@ -933,18 +956,11 @@
           <div class="receipt-meta">Поставка ${escapeHtml(formattedDate)} · заказ оформил(а) ${escapeHtml(order.initiator)}</div></div>
           <button id="refreshReceipt" class="refresh-button" type="button">Обновить</button>
         </div>
-        <div class="received-note">Статус: ${order.status === 'received' ? 'получено — заявка находится в архиве' : order.status === 'ordered'
-          ? 'заказано — отмечайте поступления'
-          : order.editable === false
-            ? 'отправлено — время изменения заявки прошло'
-            : 'отправлено — заявку можно корректировать'}
-          ${state.mode === 'correction' && order.correctionUntil ? `<br><strong>${order.status === 'ordered' ? 'Срок корректировки был до' : 'Корректировка доступна до'} ${escapeHtml(order.correctionUntil)}.</strong>` : ''}
-          ${state.mode === 'correction' && order.status === 'ordered' ? '<br><strong>Заявка уже заказана. Следующий этап — приёмка.</strong><br><button id="openReceipt" class="secondary-action locked-link" type="button">Перейти к приёмке →</button>' : ''}
-          ${state.mode === 'correction' && order.status !== 'ordered' && order.lockReason === 'deadline' ? '<br><strong>Срок корректировки истёк.</strong>' : ''}</div>
-        ${state.mode === 'correction' ? `<div class="correction-summary">
-          <div class="summary-cloud total"><span class="summary-label">Сумма заявки</span><span class="summary-value" data-correction-total>${money(correctionTotal)}</span></div>
-          <div class="summary-cloud"><span class="summary-label">Минимальный заказ</span><span class="summary-value">${escapeHtml(formatMinimum(correctionInfo))}</span></div>
-        </div><div id="correctionMinimumWarning" class="meta${correctionMinimum && correctionTotal < correctionMinimum ? '' : ' hidden'}" style="color:var(--danger)">Сумма заявки меньше минимальной. Сохранение недоступно.</div>` : ''}
+        ${state.mode === 'correction' && (order.correctionUntil || order.status === 'ordered' || order.lockReason === 'deadline') ? `<div class="received-note">
+          ${order.correctionUntil ? `${order.status === 'ordered' ? 'Срок корректировки был до' : 'Корректировка доступна до'} ${escapeHtml(order.correctionUntil)}.` : ''}
+          ${order.status === 'ordered' ? '<br>Заявка уже заказана. Следующий этап — приёмка.<br><button id="openReceipt" class="secondary-action locked-link" type="button">Перейти к приёмке →</button>' : ''}
+          ${order.status !== 'ordered' && order.lockReason === 'deadline' ? '<br>Срок корректировки истёк.' : ''}</div>` : ''}
+        ${state.mode === 'correction' ? `<div id="correctionMinimumWarning" class="meta${correctionMinimum && correctionTotal < correctionMinimum ? '' : ' hidden'}" style="color:var(--danger)">Сумма заявки меньше минимальной. Сохранение недоступно.</div>` : ''}
         <div class="${state.mode === 'correction' ? 'product-table' : ''}" style="margin-top:12px">
         ${state.mode === 'correction' ? '<div class="product-sticky-head"><div class="product-row product-header"><span>Наименование</span><span>Кратн.</span><span>Кол-во / стоимость</span></div></div>' : ''}
         ${correctionItems.filter((item) => {
@@ -1059,7 +1075,8 @@
       if (state.mode !== 'correction' || !state.latestOrder) return;
       const nodes = Array.from(el('receiptPanel').querySelectorAll('[data-edit-product]'));
       const total = nodes.reduce((sum, node) => sum + toClientNumber(node.querySelector('output').value) * toClientNumber(node.dataset.editPrice), 0);
-      const minimum = minimumNumber((state.data.suppliers[state.latestOrder.supplier] || {}).minimum);
+      const info = state.data.suppliers[state.latestOrder.supplier] || {};
+      const minimum = minimumNumber(info.minimum);
       const belowMinimum = Boolean(minimum && total < minimum);
       const hasItems = nodes.some((node) => toClientNumber(node.querySelector('output').value) > 0);
       const blockers = [];
@@ -1067,7 +1084,11 @@
       if (!hasItems) blockers.push('добавьте хотя бы одну позицию');
       if (belowMinimum) blockers.push(`доберите заказ до минимальной суммы (не хватает ${money(minimum - total)})`);
       if (state.submitting) blockers.push('дождитесь завершения сохранения');
-      el('receiptPanel').querySelector('[data-correction-total]').textContent = money(total);
+      el('grandTotal').textContent = `${money(total)} / мин. ${formatMinimum(info)}`;
+      el('footerMinimum').className = `total-minimum ${belowMinimum ? 'short' : 'ok'}`;
+      el('footerMinimum').textContent = belowMinimum
+        ? `Ещё заказать на ${formatMinimumValue(minimum - total, info)}`
+        : 'Минимальный заказ набран ✓';
       el('correctionMinimumWarning')?.classList.toggle('hidden', !belowMinimum);
       const saveButton = el('saveCorrection');
       const saveHint = el('correctionSaveHint');
@@ -1317,6 +1338,53 @@
 
     function updateStickyHeaderOffset() {
       document.documentElement.style.setProperty('--product-header-top', '0px');
+    }
+
+    function updateDateButton() {
+      const value = el('date').value;
+      el('dateButton').textContent = value
+        ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${value}T00:00:00`))
+        : 'Выберите дату';
+    }
+
+    function toggleCalendar() {
+      const calendar = el('calendar');
+      const opening = calendar.classList.contains('hidden');
+      calendar.classList.toggle('hidden', !opening);
+      el('dateButton').setAttribute('aria-expanded', String(opening));
+      if (opening) renderCalendar();
+    }
+
+    function closeCalendar() {
+      el('calendar').classList.add('hidden');
+      el('dateButton').setAttribute('aria-expanded', 'false');
+    }
+
+    function renderCalendar() {
+      const [year, month] = state.calendarMonth.split('-').map(Number);
+      const monthLabel = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
+      const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+      const days = new Date(year, month, 0).getDate();
+      const info = state.data?.suppliers?.[state.activeSupplier] || {};
+      const buttons = Array.from({ length: firstWeekday }, () => '<span class="calendar-day outside"></span>');
+      for (let day = 1; day <= days; day += 1) {
+        const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const disabled = state.mode === 'order' && isDateUnavailable(info, iso);
+        buttons.push(`<button class="calendar-day${iso === el('date').value ? ' selected' : ''}" type="button" data-calendar-date="${iso}"${disabled ? ' disabled' : ''}>${day}</button>`);
+      }
+      el('calendar').innerHTML = `<div class="calendar-head"><button type="button" data-month-step="-1" aria-label="Предыдущий месяц">‹</button><span>${escapeHtml(monthLabel)}</span><button type="button" data-month-step="1" aria-label="Следующий месяц">›</button></div><div class="calendar-grid">${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map((day) => `<span class="calendar-weekday">${day}</span>`).join('')}${buttons.join('')}</div>`;
+      el('calendar').querySelectorAll('[data-month-step]').forEach((button) => button.addEventListener('click', () => {
+        const next = new Date(year, month - 1 + Number(button.dataset.monthStep), 1);
+        state.calendarMonth = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+        renderCalendar();
+      }));
+      el('calendar').querySelectorAll('[data-calendar-date]').forEach((button) => button.addEventListener('click', () => {
+        el('date').value = button.dataset.calendarDate;
+        state.calendarMonth = el('date').value.slice(0, 7);
+        updateDateButton();
+        closeCalendar();
+        el('date').dispatchEvent(new Event('change', { bubbles: true }));
+      }));
     }
 
     function toClientNumber(value) {
