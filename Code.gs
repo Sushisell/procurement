@@ -38,7 +38,7 @@ const CONFIG = {
     yearSuffixFormat: 'yyyy',
     columnsCount: 9,
     firstDataRow: 2,
-    statuses: ['Черновик', 'Корректировка', 'Заказано', 'Получено', 'Получено не все'],
+    statuses: ['Черновик', 'Заказано', 'Получено', 'Получено не все'],
   },
 };
 
@@ -192,17 +192,13 @@ function submitOrder(payload) {
 
   appendRequestJournalRows_(master, requestRows);
 
-  const correctionUntil = availability && availability.rule
-    ? formatRussianDate_(availability.orderDate) + ' до ' + availability.rule.cutoffTime + ' (Красноярск)'
-    : (supplier.cutoffTime ? 'до ' + supplier.cutoffTime + ' по Красноярску' : 'до окончания приёма заявок поставщиком');
-
   return {
     ok: true,
     total,
     warnings: [],
     spreadsheetUrl: master.getUrl(),
     sheetName: CONFIG.sheets.requests,
-    correctionUntil,
+    correctionUntil: formatCorrectionDeadline_(supplier, payload.date),
   };
 }
 
@@ -319,6 +315,43 @@ function isOrderDeadlinePassed_(spreadsheet, order) {
   return Boolean(supplier.earliestDeliveryDate && order.date < supplier.earliestDeliveryDate);
 }
 
+function formatCorrectionDeadlineForOrder_(spreadsheet, order) {
+  const suppliers = readSupplierInfo_(spreadsheet.getSheetByName(CONFIG.sheets.suppliers));
+  const supplier = Object.keys(suppliers)
+    .map((name) => suppliers[name])
+    .find((item) => normalizeKey_(item.name) === normalizeKey_(order.supplier));
+  return supplier ? formatCorrectionDeadline_(supplier, order.date) : 'пока заявка не перейдёт в статус «Заказано»';
+}
+
+function formatCorrectionDeadline_(supplier, deliveryDate) {
+  let orderDate = deliveryDate;
+  let cutoffTime = supplier.cutoffTime;
+  if (supplier.deliveryRules.length) {
+    const deadline = findDeliveryOrderDeadline_(supplier.deliveryRules, deliveryDate);
+    if (deadline) {
+      orderDate = deadline.orderDate;
+      cutoffTime = deadline.rule.cutoffTime;
+    }
+  }
+  const dateAndTime = cutoffTime
+    ? formatRussianDate_(orderDate) + ' в ' + cutoffTime + ' (Красноярск)'
+    : formatRussianDate_(orderDate);
+  return dateAndTime + ' и только пока заявка не перейдёт в статус «Заказано»';
+}
+
+function findDeliveryOrderDeadline_(rules, deliveryDate) {
+  for (let daysBefore = 0; daysBefore <= 7; daysBefore += 1) {
+    const orderDate = addDaysToIsoDate_(deliveryDate, -daysBefore);
+    const orderWeekday = isoWeekday_(orderDate);
+    for (const rule of rules) {
+      if (rule.orderWeekday === orderWeekday && calculateDeliveryDate_(orderDate, rule) === deliveryDate) {
+        return { rule, orderDate };
+      }
+    }
+  }
+  return null;
+}
+
 function readRequestJournalOrderStatuses_(spreadsheet, order, branch) {
   const sheet = getRequestJournalSheet_(spreadsheet, formatRussianDate_(order.date));
   const values = sheet.getDataRange().getDisplayValues();
@@ -340,7 +373,8 @@ function applyRequestJournalStatuses_(spreadsheet, orders, branch) {
     const statuses = readRequestJournalOrderStatuses_(spreadsheet, order, branch);
     if (statuses[normalizeKey_('Получено')]) order.status = 'received';
     else if (statuses[normalizeKey_('Заказано')] || statuses[normalizeKey_('Получено не все')]) order.status = 'ordered';
-    if (order.status !== 'ordered' && isOrderDeadlinePassed_(spreadsheet, order)) {
+    order.correctionUntil = formatCorrectionDeadlineForOrder_(spreadsheet, order);
+    if (order.status === 'submitted' && isOrderDeadlinePassed_(spreadsheet, order)) {
       order.editable = false;
       order.lockReason = 'deadline';
       return;
@@ -433,7 +467,7 @@ function updateSubmittedOrder(payload) {
   if (journalId) return updateJournalOrder_(context.master, payload, journalId);
   const order = findOrderById_(context.spreadsheet, payload && payload.orderId);
   if (!order) throw new Error('Заявка больше не найдена.');
-  if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
+  if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Срок корректировки заявки уже истёк.');
   if (isOrderLocked_(context.master, order, payload.branch)) throw new Error('Заказанную заявку уже нельзя корректировать.');
   if (!Array.isArray(payload.items)) throw new Error('Не переданы позиции заявки.');
   const employees = readEmployees_(context.employeesSheet)[payload.branch] || [];
@@ -441,7 +475,7 @@ function updateSubmittedOrder(payload) {
     throw new Error('Сотрудник не найден в выбранном филиале.');
   }
   const sheetAndColumn = getOrderSheetAndColumn_(context.spreadsheet, order.id);
-  const requestRows = [];
+  const journalUpdates = [];
   const rowByProduct = buildProductRowIndex_(sheetAndColumn.sheet);
   const allowed = {};
   const catalogGroup = readCatalog_(context.master)
@@ -470,12 +504,7 @@ function updateSubmittedOrder(payload) {
     if (delta) {
       const prices = (catalogItem.prices || []).filter((entry) => !entry.effectiveDate || entry.effectiveDate <= order.date);
       const price = toNumber_(prices.length ? prices[prices.length - 1].price : catalogItem.price);
-      requestRows.push(buildRequestJournalRow_({
-        date: order.date,
-        supplier: order.supplier,
-        branch: payload.branch,
-        employee: payload.employee,
-      }, item.product, delta, delta * price, 'Корректировка'));
+      journalUpdates.push({ product: item.product, quantity, price, delta });
     }
     sheetAndColumn.sheet.getRange(row, sheetAndColumn.column)
       .setValue(quantity || '')
@@ -488,7 +517,7 @@ function updateSubmittedOrder(payload) {
   sheetAndColumn.sheet.getRange(supplierRow, sheetAndColumn.column)
     .clearContent()
     .setNote('Статус: отправлено.');
-  appendRequestJournalRows_(context.master, requestRows);
+  updateRequestJournalQuantities_(context.master, order, payload.branch, payload.employee, journalUpdates);
   return findOrderById_(context.spreadsheet, order.id);
 }
 
@@ -496,7 +525,7 @@ function updateJournalOrder_(spreadsheet, payload, journalId) {
   const orders = readRequestJournalOrders_(spreadsheet, payload.branch, russianDateToIso_(journalId.date));
   const order = orders.find((item) => normalizeKey_(item.supplier) === normalizeKey_(journalId.supplier));
   if (!order) throw new Error('Заявка больше не найдена.');
-  if (isOrderDeadlinePassed_(spreadsheet, order)) throw new Error('Время приёма заявки уже прошло. Заявку нельзя корректировать.');
+  if (isOrderDeadlinePassed_(spreadsheet, order)) throw new Error('Срок корректировки заявки уже истёк.');
   if (order.status !== 'submitted') throw new Error('Заказанную заявку уже нельзя корректировать.');
   if (!Array.isArray(payload.items) || !payload.items.some((item) => toNumber_(item.quantity) > 0)) {
     throw new Error('В заявке должна остаться хотя бы одна позиция.');
@@ -516,7 +545,7 @@ function updateJournalOrder_(spreadsheet, payload, journalId) {
   (catalogGroup && catalogGroup.products || []).forEach((item) => { catalog[normalizeKey_(item.product)] = item; });
   const original = {};
   order.items.forEach((item) => { original[normalizeKey_(item.product)] = item; });
-  const rows = [];
+  const updates = [];
   const minimumItems = [];
   payload.items.forEach((item) => {
     const productKey = normalizeKey_(item.product);
@@ -528,14 +557,68 @@ function updateJournalOrder_(spreadsheet, payload, journalId) {
     const price = toNumber_(priceEntries.length ? priceEntries[priceEntries.length - 1].price : catalogItem.price);
     minimumItems.push({ product: catalogItem.product, quantity, price, unit: catalogItem.unit });
     const delta = quantity - toNumber_(oldItem && oldItem.quantity);
-    if (delta) rows.push(buildRequestJournalRow_({
-      date: order.date, supplier: order.supplier, branch: payload.branch, employee: payload.employee,
-    }, catalogItem.product, delta, delta * price, 'Корректировка'));
+    if (delta) updates.push({ product: catalogItem.product, quantity, price, delta });
   });
   validateSupplierMinimum_({ items: minimumItems }, supplier);
-  appendRequestJournalRows_(spreadsheet, rows);
+  updateRequestJournalQuantities_(spreadsheet, order, payload.branch, payload.employee, updates);
   return readRequestJournalOrders_(spreadsheet, payload.branch, order.date)
     .find((item) => normalizeKey_(item.supplier) === normalizeKey_(order.supplier));
+}
+
+function updateRequestJournalQuantities_(spreadsheet, order, branch, employee, updates) {
+  if (!updates.length) return;
+  const sheet = getRequestJournalSheet_(spreadsheet, order.date);
+  const values = sheet.getDataRange().getDisplayValues();
+  const notes = sheet.getDataRange().getNotes();
+  const deliveryDate = normalizeKey_(formatRussianDate_(order.date));
+  const supplier = normalizeKey_(order.supplier);
+  const branchKey = normalizeKey_(branch);
+  const rowsByProduct = {};
+
+  values.slice(1).forEach((row, index) => {
+    if (normalizeKey_(row[1]) !== deliveryDate
+      || normalizeKey_(row[2]) !== supplier
+      || normalizeKey_(row[6]) !== branchKey) return;
+    const productKey = normalizeKey_(row[3]);
+    if (!rowsByProduct[productKey]) rowsByProduct[productKey] = [];
+    rowsByProduct[productKey].push(index + 2);
+  });
+
+  const rowsToDelete = [];
+  const correctionDate = Utilities.formatDate(new Date(), CONFIG.timeZone, 'dd.MM');
+  updates.forEach((update) => {
+    const productKey = normalizeKey_(update.product);
+    const matchingRows = rowsByProduct[productKey] || [];
+    const historyLine = formatSignedQuantity_(update.delta) + ' ' + clean_(employee) + ' от ' + correctionDate;
+    if (!matchingRows.length) {
+      const row = buildRequestJournalRow_({
+        date: order.date, supplier: order.supplier, branch, employee,
+      }, update.product, update.quantity, update.quantity * update.price, 'Черновик');
+      const rowNumber = sheet.getLastRow() + 1;
+      sheet.getRange(rowNumber, 1, 1, CONFIG.requestSheet.columnsCount).setValues([row]);
+      sheet.getRange(rowNumber, 5).setNote(historyLine);
+      applyRequestStatusValidation_(sheet, rowNumber, 1);
+      return;
+    }
+
+    const primaryRow = matchingRows[0];
+    const previousNotes = matchingRows.map((rowNumber) => clean_(notes[rowNumber - 1][4])).filter(Boolean);
+    sheet.getRange(primaryRow, 5, 1, 2)
+      .setValues([[update.quantity, update.quantity * update.price]]);
+    sheet.getRange(primaryRow, 5).setNote(previousNotes.concat(historyLine).join('\n'));
+    if (normalizeKey_(values[primaryRow - 1][8]) === normalizeKey_('Корректировка')) {
+      sheet.getRange(primaryRow, 9).setValue('Черновик');
+    }
+    matchingRows.slice(1).forEach((rowNumber) => rowsToDelete.push(rowNumber));
+  });
+
+  Array.from(new Set(rowsToDelete)).sort((a, b) => b - a)
+    .forEach((rowNumber) => sheet.deleteRow(rowNumber));
+}
+
+function formatSignedQuantity_(value) {
+  const number = toNumber_(value);
+  return (number > 0 ? '+' : '') + String(number);
 }
 
 function markOrderOrdered(payload) {
@@ -546,7 +629,7 @@ function markOrderOrdered(payload) {
     const order = orders.find((item) => normalizeKey_(item.supplier) === normalizeKey_(journalId.supplier));
     if (!order) throw new Error('Заявка больше не найдена.');
     if (isOrderDeadlinePassed_(context.master, order)) throw new Error('Время приёма заявки уже прошло. Статус заявки нельзя изменить.');
-    updateRequestJournalStatus_(context.master, order, payload.branch, 'Заказано', ['Черновик', 'Корректировка']);
+    updateRequestJournalStatus_(context.master, order, payload.branch, 'Заказано', ['Черновик']);
     return readRequestJournalOrders_(context.master, payload.branch, order.date)
       .find((item) => normalizeKey_(item.supplier) === normalizeKey_(order.supplier));
   }
@@ -615,6 +698,7 @@ function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
   const sheetName = year === CONFIG.requestSheet.baseYear ? baseName : baseName + ' ' + year;
   const sheet = spreadsheet.getSheetByName(sheetName);
   if (sheet) {
+    migrateLegacyCorrectionRows_(sheet);
     applyRequestStatusValidation_(sheet, CONFIG.requestSheet.firstDataRow,
       Math.max(1, sheet.getMaxRows() - CONFIG.requestSheet.firstDataRow + 1));
     return sheet;
@@ -634,6 +718,49 @@ function getRequestJournalSheet_(spreadsheet, deliveryDateText) {
   applyRequestStatusValidation_(newSheet, CONFIG.requestSheet.firstDataRow,
     Math.max(1, newSheet.getMaxRows() - CONFIG.requestSheet.firstDataRow + 1));
   return newSheet;
+}
+
+function migrateLegacyCorrectionRows_(sheet) {
+  const range = sheet.getDataRange();
+  const values = range.getDisplayValues();
+  if (values.length < CONFIG.requestSheet.firstDataRow) return;
+  const notes = range.getNotes();
+  const groups = {};
+
+  values.slice(CONFIG.requestSheet.firstDataRow - 1).forEach((row, offset) => {
+    const rowNumber = offset + CONFIG.requestSheet.firstDataRow;
+    const key = [row[1], row[2], row[3], row[6]].map(normalizeKey_).join('|');
+    if (!key.replace(/\|/g, '')) return;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ row, rowNumber, note: clean_(notes[rowNumber - 1][4]) });
+  });
+
+  const rowsToDelete = [];
+  Object.keys(groups).forEach((key) => {
+    const rows = groups[key];
+    const corrections = rows.filter((item) => normalizeKey_(item.row[8]) === normalizeKey_('Корректировка'));
+    if (!corrections.length) return;
+    const primary = rows.find((item) => normalizeKey_(item.row[8]) !== normalizeKey_('Корректировка')) || rows[0];
+    const quantity = rows.reduce((sum, item) => sum + toNumber_(item.row[4]), 0);
+    const total = rows.reduce((sum, item) => sum + toNumber_(item.row[5]), 0);
+    const history = rows.map((item) => item.note).filter(Boolean);
+    corrections.forEach((item) => {
+      const delta = toNumber_(item.row[4]);
+      const dateParts = clean_(item.row[0]).split('.');
+      const date = dateParts.length >= 2 ? dateParts[0] + '.' + dateParts[1] : clean_(item.row[0]);
+      history.push(formatSignedQuantity_(delta) + ' ' + clean_(item.row[7]) + ' от ' + date);
+    });
+    sheet.getRange(primary.rowNumber, 5, 1, 2).setValues([[quantity, total]]);
+    sheet.getRange(primary.rowNumber, 5).setNote(history.join('\n'));
+    if (normalizeKey_(primary.row[8]) === normalizeKey_('Корректировка')) {
+      sheet.getRange(primary.rowNumber, 9).setValue('Черновик');
+    }
+    rows.filter((item) => item.rowNumber !== primary.rowNumber)
+      .forEach((item) => rowsToDelete.push(item.rowNumber));
+  });
+
+  Array.from(new Set(rowsToDelete)).sort((a, b) => b - a)
+    .forEach((rowNumber) => sheet.deleteRow(rowNumber));
 }
 
 function applyRequestStatusValidation_(sheet, firstRow, rowCount) {

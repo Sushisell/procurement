@@ -884,7 +884,9 @@
           : order.editable === false
             ? 'отправлено — время изменения заявки прошло'
             : 'отправлено — заявку можно корректировать'}
-          ${state.mode === 'correction' && (order.status === 'ordered' || order.editable === false) ? '<br><strong>Заявка на этот день уже заказана. Следующий этап — приёмка.</strong><br><button id="openReceipt" class="secondary-action locked-link" type="button">Перейти к приёмке →</button>' : ''}</div>
+          ${state.mode === 'correction' && order.correctionUntil ? `<br><strong>${order.status === 'ordered' ? 'Срок корректировки был до' : 'Корректировка доступна до'} ${escapeHtml(order.correctionUntil)}.</strong>` : ''}
+          ${state.mode === 'correction' && order.status === 'ordered' ? '<br><strong>Заявка уже заказана. Следующий этап — приёмка.</strong><br><button id="openReceipt" class="secondary-action locked-link" type="button">Перейти к приёмке →</button>' : ''}
+          ${state.mode === 'correction' && order.status !== 'ordered' && order.lockReason === 'deadline' ? '<br><strong>Срок корректировки истёк.</strong>' : ''}</div>
         ${state.mode === 'correction' ? `<div class="correction-summary">
           <div class="summary-cloud total"><span class="summary-label">Сумма заявки</span><span class="summary-value" data-correction-total>${money(correctionTotal)}</span></div>
           <div class="summary-cloud"><span class="summary-label">Минимальный заказ</span><span class="summary-value">${escapeHtml(formatMinimum(correctionInfo))}</span></div>
