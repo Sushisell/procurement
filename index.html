@@ -162,6 +162,16 @@
     }
 
     .meta { color: var(--muted); font-size: 14px; margin-top: 8px; white-space: pre-line; }
+    .save-hint {
+      margin-top: 8px;
+      padding: 9px 11px;
+      border-radius: 12px;
+      background: #fff4ed;
+      color: #b93815;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
     .phones a { color: var(--primary-dark); font-weight: 700; text-decoration: none; }
 
     .product-table {
@@ -409,7 +419,7 @@
   </div>
   <main class="app">
     <header class="header">
-      <h1 class="title">Заявка на продукты <span id="appVersion" class="version-badge">v0.10.0</span></h1>
+      <h1 class="title">Заявка на продукты <span id="appVersion" class="version-badge">v0.10.1</span></h1>
       <p id="subtitle" class="subtitle">Выберите филиал, ФИО, дату и поставщика.</p>
     </header>
 
@@ -469,7 +479,7 @@
   </footer>
 
   <script>
-    const APP_VERSION = 'v0.10.0';
+    const APP_VERSION = 'v0.10.1';
     const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzH9AQ4EGl_EjaxR8Ii7jfHxx2lXdjMCfgOesNH9DVE_MI_u32yy_h0ttrJB-JmG_hmRg/exec';
     const API_URL = window.PROCUREMENT_API_URL || new URLSearchParams(window.location.search).get('api') || DEFAULT_API_URL;
     const hasAppsScriptBridge = Boolean(window.google?.script?.run);
@@ -524,7 +534,10 @@
         updateSubmitState();
       });
       el('employee').addEventListener('change', () => {
-        if (state.mode !== 'order') renderReceipt();
+        // В корректировке не перерисовываем список: иначе выбор сотрудника после
+        // изменения количества сбросит ещё не сохранённые правки.
+        if (state.mode === 'correction') updateCorrectionSummary();
+        else if (state.mode !== 'order') renderReceipt();
         updateSubmitState();
       });
       el('date').addEventListener('change', () => {
@@ -897,7 +910,7 @@
             </div>
           </div>`;
         }).join('') || '<div class="empty">Все позиции получены полностью.</div>'}</div>
-        ${state.mode === 'correction' && order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions" style="grid-template-columns:1fr"><button id="saveCorrection" class="secondary-action" type="button">Сохранить изменения</button></div>' : ''}`;
+        ${state.mode === 'correction' && order.status === 'submitted' && order.editable !== false ? '<div class="receipt-actions" style="grid-template-columns:1fr"><button id="saveCorrection" class="secondary-action" type="button" aria-describedby="correctionSaveHint">Сохранить изменения</button><div id="correctionSaveHint" class="save-hint hidden" role="status"></div></div>' : ''}`;
       el('refreshReceipt').addEventListener('click', () => {
         delete state.ordersCache[cacheKey(el('branch').value, el('date').value, state.mode)];
         loadLatestOrder();
@@ -976,9 +989,23 @@
       const total = nodes.reduce((sum, node) => sum + toClientNumber(node.querySelector('output').value) * toClientNumber(node.dataset.editPrice), 0);
       const minimum = minimumNumber((state.data.suppliers[state.latestOrder.supplier] || {}).minimum);
       const belowMinimum = Boolean(minimum && total < minimum);
+      const hasItems = nodes.some((node) => toClientNumber(node.querySelector('output').value) > 0);
+      const blockers = [];
+      if (!el('employee').value) blockers.push('выберите ФИО сотрудника');
+      if (!hasItems) blockers.push('добавьте хотя бы одну позицию');
+      if (belowMinimum) blockers.push(`доберите заказ до минимальной суммы (не хватает ${money(minimum - total)})`);
       el('receiptPanel').querySelector('[data-correction-total]').textContent = money(total);
       el('correctionMinimumWarning')?.classList.toggle('hidden', !belowMinimum);
-      if (el('saveCorrection')) el('saveCorrection').disabled = belowMinimum || !el('employee').value;
+      const saveButton = el('saveCorrection');
+      const saveHint = el('correctionSaveHint');
+      if (saveButton) {
+        saveButton.disabled = blockers.length > 0;
+        saveButton.title = blockers.length ? `Сохранение недоступно: ${blockers.join('; ')}.` : '';
+      }
+      if (saveHint) {
+        saveHint.textContent = blockers.length ? `Почему нельзя сохранить: ${blockers.join('; ')}.` : '';
+        saveHint.classList.toggle('hidden', !blockers.length);
+      }
       el('grandTotal').textContent = money(total);
     }
 
